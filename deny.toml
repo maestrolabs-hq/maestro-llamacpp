@@ -1,6 +1,6 @@
 # cargo-deny supersedes cargo-audit: advisories plus licences, bans and sources.
-# The workspace has no application dependencies, so every section below is a
-# guard against that changing silently rather than a filter over a real tree.
+# The tree is one dependency deep -- a TOML parser and what it pulls in -- so
+# these sections now filter a real tree rather than only guarding an empty one.
 
 [advisories]
 yanked = "deny"
@@ -10,6 +10,10 @@ yanked = "deny"
 # The list holds exactly what the tree uses: an unmatched allowance is a
 # warning, and this repository's bar is warning-free. Widen it when a
 # dependency arrives that needs it.
+#
+# The TOML parser did not need it. Every crate it brings in offers MIT OR
+# Apache-2.0, and satisfying one of the two is enough, so allowing Apache-2.0
+# as well would add a permission nothing exercises.
 allow = ["MIT"]
 confidence-threshold = 0.93
 

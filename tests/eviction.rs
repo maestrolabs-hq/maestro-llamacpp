@@ -180,6 +180,18 @@ fn start_stream(address: std::net::SocketAddr, path: &str, body: &str) -> (TcpSt
     (stream, String::from_utf8_lossy(&first[..read]).into_owned())
 }
 
+/// The gate on the slot invariant, driven the way a relay drives it.
+///
+/// The rule the invariant states -- that a reference to a loaded child is
+/// obtained only under its slot lock -- is what makes `Arc::strong_count` mean
+/// "somebody is reading from this". Nothing in the compiler keeps it, because
+/// it is about where clones are made rather than about types, so this is what
+/// a reader who breaks it runs into.
+///
+/// The cost of breaking it is why this is asserted end to end rather than
+/// against a stand-in: a slot emptied while somebody is reading leaves a
+/// process the router no longer accounts for, and a stream that stops early is
+/// indistinguishable from a model that finished.
 #[test]
 fn a_child_with_a_stream_in_flight_is_not_unloaded() {
     // 3000 and 3000 against 4096, as the eviction case: the second entry can

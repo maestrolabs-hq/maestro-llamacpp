@@ -20,80 +20,46 @@ pub(super) struct Loaded {
 ///
 /// # Invariant
 ///
-/// A reference to a loaded child is obtainable only by locking its slot.
+/// Every path that hands out an `Arc<Child>` clones it while holding this
+/// lock and never before. A reference may also be minted before insertion,
+/// provided the slot's handle and the handed-out handle come into existence
+/// together under the lock, so no reader can observe the slot between them.
+///
+/// Three paths in `slots` touch a slot's contents, and auditing this rule is
+/// auditing them:
+///
+/// - `Slots::running`, the fast path, clones under the lock;
+/// - `Slots::admit`, the slow path, mints the reference with the child and
+///   inserts its clone under the lock in the same breath;
+/// - `Slots::unload` and `Slots::clear`, behind eviction and `Router::stop`,
+///   take under the lock and hand nothing back.
 ///
 /// This is the rule that makes `Arc::strong_count` mean "somebody is reading
-/// from this child". While the lock is held no new reference can be taken, so
-/// a count of one says the slot's own handle is the only one alive and the
-/// child is idle. Hand a reference out anywhere else -- cache one, clone one
-/// without the lock -- and the count stops answering that question, at which
-/// point eviction can kill a process somebody is still reading from, and the
-/// caller sees a stream stop early with no way to tell it from a model that
-/// finished.
+/// from this child": a count of one says the slot's own handle is the only
+/// one alive and the child is idle. Hand a reference out anywhere else --
+/// cache one, clone one without the lock, return one from a future endpoint
+/// that lists what is loaded -- and the count stops answering that question,
+/// at which point eviction can empty the slot of a process somebody is still
+/// reading from. The router then believes it freed memory it did not.
 ///
 /// The compiler cannot keep this rule, because it is about where clones are
-/// made rather than about types. So the type says it, and
-/// `a_slot_reports_busy_while_a_reference_it_handed_out_lives` is named for
-/// the rule a reader would be breaking.
+/// made rather than about types. So the type says it, and the gate that fails
+/// when it breaks is `a_child_with_a_stream_in_flight_is_not_unloaded` in
+/// `tests/eviction.rs`, which drives a real reader against a real decision.
 pub(super) type Slot = Mutex<Option<Loaded>>;
 
 /// Whether anything besides its slot is holding this child.
 ///
 /// Where the slot's invariant is cashed in: the count answers "is somebody
 /// reading from this" only because references are handed out under the slot
-/// lock and nowhere else. Named and called from one place so that rule has
-/// somewhere to live.
+/// lock and nowhere else. Named so that rule has somewhere to live, and called
+/// from the two places that act on it -- `Slots::held`, which reads it for a
+/// decision, and `Slots::unload`, which reads it again at the moment it stops
+/// being reversible.
 ///
-/// Generic because what is counted is the handle. A `Child` contributes a
-/// process and nothing to the count, so the rule can be driven below without
-/// spawning one.
+/// Generic because what is counted is the handle rather than what it points
+/// at, and saying so keeps a `Child`'s process out of a question that is only
+/// about references.
 pub(super) fn busy<T>(handle: &Arc<T>) -> bool {
     Arc::strong_count(handle) > 1
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The slot's invariant, driven the way a relay drives it.
-    ///
-    /// Not a test that `Arc` counts correctly: it does, and that is the
-    /// standard library's business. This exists so that a reader who changes
-    /// where references are handed out finds a failing test named for the rule
-    /// they are about to break -- because the cost of breaking it is a process
-    /// killed while somebody is reading from it, which shows up as a stream
-    /// that stopped early and nothing else.
-    #[test]
-    fn a_slot_reports_busy_while_a_reference_it_handed_out_lives() {
-        // Stands in for a loaded child, because the count is the whole subject
-        // and a real one would spawn a process to say the same thing.
-        let slot: Mutex<Option<Arc<&str>>> = Mutex::new(Some(Arc::new("a child")));
-
-        let reading = {
-            let held = slot.lock().expect("a fresh mutex is not poisoned");
-            let held = held.as_ref().expect("something is loaded");
-            assert!(!busy(held), "nothing has been handed out yet");
-            // Cloned under the lock, which is the only place the invariant
-            // allows a reference to be taken.
-            Arc::clone(held)
-        };
-
-        {
-            let held = slot.lock().expect("a fresh mutex is not poisoned");
-            let held = held.as_ref().expect("something is loaded");
-            assert!(
-                busy(held),
-                "a reference is out, so this child must not be unloaded"
-            );
-        }
-
-        drop(reading);
-
-        let held = slot.lock().expect("a fresh mutex is not poisoned");
-        let held = held.as_ref().expect("something is loaded");
-        assert!(
-            !busy(held),
-            "the reader finished, so the child is a candidate again"
-        );
-    }
 }

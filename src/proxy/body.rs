@@ -43,24 +43,22 @@ pub(super) const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// Returns the bytes alongside the name so the caller forwards what it already
 /// has rather than re-serialising a body it does not own.
 ///
+/// # Precondition
+///
+/// `content_length` is within [`MAX_BODY_BYTES`]. This allocates what it is
+/// told to, so a caller that has not checked is handing a stranger the size of
+/// an allocation. The bound is enforced once, by the caller that still has a
+/// status left to send -- an oversized body is a `413`, and this returns
+/// nothing that could carry one.
+///
 /// # Errors
 ///
-/// Returns a [`Failure`] when the declared length exceeds [`MAX_BODY_BYTES`],
-/// when the body ends early, when it is not JSON, or when it names no model.
+/// Returns a [`Failure`] when the body ends early, when it is not JSON, or
+/// when it names no model.
 pub(super) fn read(
     reader: &mut impl Read,
     content_length: usize,
 ) -> Result<(Vec<u8>, String), Failure> {
-    // Refused before anything is allocated. Checking after reading would mean
-    // taking the memory first and objecting to it afterwards, which is the
-    // bug the bound exists to prevent.
-    if content_length > MAX_BODY_BYTES {
-        return Err(refused(&format!(
-            "a request body of {content_length} bytes is larger than the \
-             {MAX_BODY_BYTES} this router will read"
-        )));
-    }
-
     let mut bytes = vec![0u8; content_length];
     reader.read_exact(&mut bytes).map_err(|error| {
         refused(&format!(
@@ -180,21 +178,6 @@ mod tests {
         assert!(
             refusal.to_string().contains("JSON"),
             "the refusal says what was wrong with it: {refusal}"
-        );
-    }
-
-    #[test]
-    fn a_declared_length_over_the_bound_is_refused_before_it_is_read() {
-        // An empty reader: if the bound were checked after reading, this would
-        // fail for ending early instead, which is a different message.
-        let mut nothing = Cursor::new(Vec::new());
-
-        let refusal = read(&mut nothing, MAX_BODY_BYTES + 1)
-            .expect_err("a bad client cannot make the router allocate");
-
-        assert!(
-            refusal.to_string().contains(&MAX_BODY_BYTES.to_string()),
-            "the refusal names the limit, so the reader knows what to change: {refusal}"
         );
     }
 

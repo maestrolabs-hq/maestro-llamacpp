@@ -62,8 +62,11 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
         Endpoint::Dedicated { id, .. } => (id.clone(), None),
         Endpoint::Listing => unreachable!("answered above"),
         Endpoint::Generic { .. } => {
-            // Checked here rather than after reading, because this is where a
-            // status is chosen and an oversized body has its own.
+            // The one place this bound is enforced, and the only place it can
+            // be: `body::read` allocates what it is told to and has no status
+            // left to refuse with. Checked before reading rather than after,
+            // because taking the memory and then objecting to it is the bug
+            // the bound exists to prevent.
             if request.content_length > body::MAX_BODY_BYTES {
                 return refuse(
                     &mut stream,

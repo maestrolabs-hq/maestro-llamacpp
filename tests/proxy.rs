@@ -132,6 +132,39 @@ fn a_body_naming_no_model_at_all_is_a_bad_request() {
 }
 
 #[test]
+fn a_body_larger_than_the_router_will_read_is_refused_before_it_is_read() {
+    let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
+
+    // Declared and not sent. A router that read before deciding would block
+    // here waiting for sixty-four megabytes that are never coming; one that
+    // allocated before deciding would take them from a stranger's say-so.
+    let declared = 64 * 1024 * 1024;
+    let reply = request(
+        serving.address(),
+        &format!(
+            "POST /v1/chat/completions HTTP/1.1\r\n\
+             Host: router\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {declared}\r\n\
+             Connection: close\r\n\
+             \r\n"
+        ),
+    );
+
+    assert_eq!(
+        status(&reply),
+        Some(413),
+        "an oversized body has its own status, not the 400 that every other \
+         unreadable body gets:\n{reply}"
+    );
+    assert!(
+        reply.contains(&declared.to_string()) && reply.contains("this router will read"),
+        "the refusal names what was declared and what the limit is, so the \
+         reader knows which of the two to change:\n{reply}"
+    );
+}
+
+#[test]
 fn the_listing_answers_from_the_catalog_without_starting_anything() {
     // A models root with no files in it: starting any child would fail on the
     // missing model, so a 200 here is proof that none was attempted.

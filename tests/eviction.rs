@@ -172,11 +172,16 @@ fn start_stream(address: std::net::SocketAddr, path: &str, body: &str) -> (TcpSt
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .expect("a read timeout, so a hang fails rather than blocking the suite");
-    stream.write_all(post(path, body).as_bytes()).expect("write");
+    stream
+        .write_all(post(path, body).as_bytes())
+        .expect("write");
 
     let mut first = [0u8; 512];
     let read = stream.read(&mut first).expect("the router answers");
-    assert!(read > 0, "something came back before anything else happened");
+    assert!(
+        read > 0,
+        "something came back before anything else happened"
+    );
     (stream, String::from_utf8_lossy(&first[..read]).into_owned())
 }
 

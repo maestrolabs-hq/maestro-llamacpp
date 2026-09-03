@@ -18,10 +18,42 @@
 # slot within 38 milliseconds.
 #
 # The generic endpoint and eviction were verified by hand against that same
-# version: a request naming gemma3 was answered by gemma3, a stream from the
-# real server arrived in 96 pieces rather than one, and with a 25000 MiB
-# budget a request for qwen38 unloaded gemma3 and answered in six seconds,
-# then swapped back in one.
+# version, with MAESTRO_MEMORY_BUDGET_MIB=25000. Every step, so that one left
+# out is visible rather than implied:
+#
+#   startup             both endpoints and the budget line are printed
+#   GET /v1/models      lists all four entries, and starts no child
+#   completion          a request naming gemma3 was answered by gemma3
+#   streamed completion arrived in 96 pieces rather than one
+#   the swap            a request for qwen38 unloaded gemma3 and answered in
+#                       six seconds, then swapped back in one, with one child
+#                       running throughout
+#   parity, unmodified  two models in one session on :8080, reached by the
+#                       model entries the operator's agent already carries,
+#                       with no edit to them. This is the acceptance bar
+#   interrupt           a stream abandoned partway was followed by an answer
+#                       in 47 milliseconds, so the server had stopped
+#                       generating
+#   unknown model       404, listing what the catalog carries
+#   no model field      400, naming the endpoint that needs none
+#
+# The review fixes that followed were verified against the same version, with
+# a 2048 MiB budget so that any second model would need gemma3's room:
+#
+#   GET /v1/models      still starts no child
+#   completion          routed by the body, answered by gemma3
+#   missing model file  a request for qwen3-06b, whose file is genuinely not
+#                       there, was refused 502 naming the path -- and gemma3
+#                       kept the same process and went on answering. Before
+#                       the fix its room would have been taken for a start
+#                       that could never have happened
+#   GET /v1/models/x    411, naming the header it wanted
+#   bad Content-Length  400, quoting back what arrived
+#
+# Not re-run after those fixes, because each needs the 27B model and a budget
+# to match: the swap, the 96-piece stream, and the mid-stream interrupt. They
+# are recorded above as they were measured before the fixes, which touched
+# neither the relay nor the decision that orders a swap.
 #
 # The memory estimates are estimates. They are what eviction decides from, and
 # they are not measurements: an entry that costs more than its figure is

@@ -144,10 +144,9 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
             // Kept rather than defaulted. A length that will not parse is a
             // fact about the request, and the one caller that can still send a
             // status is the one that should decide what to do about it.
-            length = value.parse().map_or_else(
-                |_| Length::Malformed(value.to_owned()),
-                Length::Given,
-            );
+            length = value
+                .parse()
+                .map_or_else(|_| Length::Malformed(value.to_owned()), Length::Given);
         }
         if name.eq_ignore_ascii_case("transfer-encoding")
             && value.to_ascii_lowercase().contains("chunked")

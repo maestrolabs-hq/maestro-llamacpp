@@ -188,6 +188,13 @@ impl Router {
     /// backlog and then waits with nothing to tell it why. A resident
     /// carrying the default startup budget would make that a five-minute
     /// silence from something that looks like a live router.
+    ///
+    /// What the thread buys is every answer that needs no child: the model
+    /// list, a refusal, a route that does not exist. It does not buy the
+    /// first request to another entry, which finds nothing loaded, enters
+    /// admission, and waits there for the resident's start to return. The
+    /// wait is bounded by that entry's startup budget rather than removed,
+    /// so the silence moved from the listener to the first load.
     pub fn serve(&self) {
         let loading = Arc::clone(&self.shared);
         thread::spawn(move || residents::load(&loading));

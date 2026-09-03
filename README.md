@@ -203,9 +203,13 @@ pgrep -af llama-server
 A signal handler needs a dependency and a Windows job object, which is a
 change with its own gates to clear rather than a line to add here.
 
-**Three smaller things are known and not addressed.** Recorded so the next
+**Four smaller things are known and not addressed.** Recorded so the next
 slice inherits them rather than discovering them:
 
+- The loading thread keeps the router answering, but only what needs no child.
+  A first request to another entry still waits on the resident's load, bounded
+  by that entry's startup budget. The silence the thread exists to prevent
+  moved from the listener to the first load rather than going away.
 - A decision naming two entries takes them in turn and stops at the first that
   gained a reader, so an operator can lose a warm model *and* still be refused.
   The budget is never overcommitted by this -- the router ends under-loaded

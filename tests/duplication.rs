@@ -3,9 +3,10 @@
 //!
 //! Structural similarity is not the same as duplication worth removing, so
 //! this gate is an allowlist rather than a threshold: every accepted pair is a
-//! written decision, and anything new fails. The list is empty because the one
-//! duplication this repository would otherwise carry -- three gates walking
-//! the same tree -- is factored into `tests/common/mod.rs` instead.
+//! written decision, and anything new fails. A pair earns its place by being
+//! cheaper to keep than to merge, and the reason has to say why -- the one
+//! duplication that did not earn it, three gates walking the same tree, is
+//! factored into `tests/common/mod.rs` instead of listed here.
 
 use std::collections::BTreeSet;
 use std::process::Command;

@@ -60,16 +60,21 @@ fn the_body_decides_which_child_answers() {
     let serving = serving(&two_entries(), ModelsRoot::with(&[MODEL, SECOND_MODEL]));
 
     for wanted in ["gemma3", "qwen38"] {
-        let reply = request(
-            serving.address(),
-            &post("/v1/echo", &format!("{{\"model\":\"{wanted}\"}}")),
-        );
+        let body = format!("{{\"model\":\"{wanted}\"}}");
+        let reply = request(serving.address(), &post("/v1/echo", &body));
 
         assert_eq!(status(&reply), Some(200), "a child answered:\n{reply}");
         assert!(
             reply.contains(&format!("alias: {wanted}")),
             "the child started for '{wanted}' is the one that answered, \
              observed at the child rather than assumed at the router:\n{reply}"
+        );
+        assert!(
+            reply.contains(&format!("body: {body}")),
+            "the child received the caller's own bytes. The router read this \
+             body to learn which model answers, and forwarding what it parsed \
+             rather than what it was given would change a request it does not \
+             own:\n{reply}"
         );
     }
 }
@@ -179,6 +184,12 @@ fn a_body_is_forwarded_to_the_child_with_its_headers() {
     let reply = request(serving.address(), &post("/models/gemma3/v1/echo", body));
 
     assert_eq!(status(&reply), Some(200), "the child answered:\n{reply}");
+    assert!(
+        reply.contains(&format!("body: {body}")),
+        "the body itself reaches the child, byte for byte. This endpoint names \
+         its model in the path and never reads the body, so what arrives here \
+         is what was copied straight through:\n{reply}"
+    );
     assert!(
         reply.contains(&format!("Content-Length: {}", body.len())),
         "the declared length reaches the child unchanged:\n{reply}"

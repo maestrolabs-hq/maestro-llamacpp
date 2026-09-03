@@ -42,15 +42,6 @@ const ACCEPTED: &[(&str, &str)] = &[
          missing models table is a problem the catalog is refused for.",
     ),
     (
-        "stop <-> serve",
-        "Two short methods on Router whose whole body is one chain on self, \
-         which is the only thing they share. One takes a lock and empties a \
-         map; the other loops on a listener and spawns a thread per \
-         connection. There is no common operation to factor out -- only a \
-         common shape -- and a helper that took the difference as a parameter \
-         would be longer than both and named after neither.",
-    ),
-    (
         "an_entry_whose_child_never_becomes_ready_is_a_gateway_timeout \
          <-> an_entry_whose_child_cannot_start_is_a_bad_gateway",
         "Both assert one refusal: the status it carries, and that its message \
@@ -61,6 +52,18 @@ const ACCEPTED: &[(&str, &str)] = &[
          router must tell apart. Those two causes are exactly what \
          launch::Failure's variants exist to distinguish, so a merged test \
          would leave the distinction with no test of its own.",
+    ),
+    (
+        "a_resident_entry_is_never_unloaded <-> a_busy_entry_is_never_unloaded",
+        "Two protection rules, one shape: a protected entry is held beside an \
+         idle one, and the idle one goes. The shared arrangement was factored \
+         into with_one_protected, which is what each test now calls; what \
+         remains is a single assertion whose structure cannot differ, because \
+         the rules differ only in which field makes an entry protected. \
+         Merging them would take that field as a parameter and stop naming \
+         residency and busyness as the two separate reasons a model is never \
+         a candidate -- and those two reasons are the whole of the policy \
+         this module exists to keep.",
     ),
     (
         "start <-> spawn",

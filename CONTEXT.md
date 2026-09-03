@@ -81,6 +81,45 @@ The command line an entry becomes. Named because parity with the current
 router is asserted against it directly.
 _Avoid_: arguments, command.
 
+**Generic endpoint**:
+The endpoint shared by every entry, which takes the model from the request
+body. What an OpenAI-compatible client already sends, which is why it exists.
+_Avoid_: default endpoint, catch-all.
+
+**Memory budget**:
+The ceiling the loaded models are held within. A fact about one machine's
+hardware rather than about a set of models, which is why it is not in the
+catalog. Absent means nothing is ever unloaded.
+_Avoid_: quota, cap.
+
+**Admission**:
+Deciding whether a wanted model may be loaded, and what must be unloaded
+first. A decision about estimates, taken before anything is started.
+_Avoid_: scheduling, allocation.
+
+**Swap**:
+Unloading one model so another can be loaded in its place. Named for what the
+operator sees: the same address answers with a model it was not holding a
+moment ago, and no configuration changed.
+_Avoid_: reload, cycle, hot-swap.
+
+**Candidate**:
+A loaded model admission may unload: on-demand, and with nothing reading from
+it. A resident model is never one, and neither is a busy one.
+_Avoid_: victim, target.
+
+**In-flight request**:
+A request that has been handed a reference to a child and has not finished
+with it. What makes a model busy, and what a decision to unload is not
+allowed to interrupt.
+_Avoid_: active request, pending request.
+
+**Busy**:
+Whether something is currently reading from a loaded model. What makes a model
+safe from eviction, because unloading one mid-answer truncates a stream the
+caller cannot tell from a finished one.
+_Avoid_: locked, in use.
+
 **Readiness**:
 Whether a child has finished loading and will answer. Distinct from liveness.
 

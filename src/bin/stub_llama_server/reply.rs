@@ -9,6 +9,13 @@
 //! reflects what arrived -- the last of which no real server serves, and
 //! exists so a test can observe what reached the child rather than trusting
 //! what the router believes it sent.
+//!
+//! The echo reports three things: the head as received, the alias the stub was
+//! started as, and the body. The alias is there because every child is the
+//! same binary, so without it a test cannot tell which child answered. The
+//! body is there because a relay that forwarded the wrong bytes -- re-
+//! serialised, truncated, doubled -- would otherwise pass every test in the
+//! repository, the request having been the one thing nothing looked at.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -45,17 +52,25 @@ pub struct Pacing {
 ///
 /// Returns whatever the socket returned. Every error here is a client that
 /// hung up, which the caller drops: nothing in this stub is durable.
-pub fn answer(mut stream: TcpStream, ready: bool, pacing: &Pacing) -> std::io::Result<()> {
+pub fn answer(
+    mut stream: TcpStream,
+    ready: bool,
+    pacing: &Pacing,
+    alias: &str,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let head = read_head(&mut reader)?;
 
     // Drained from the same reader that read the head, because the buffer may
-    // already hold part of the body. Discarded: nothing here inspects it, and
-    // a body left unread would fail the caller's write rather than this stub's.
+    // already hold part of the body, and because a body left unread would fail
+    // the caller's write rather than this stub's. Kept rather than dropped: the
+    // echo reflects it, which is how a test sees what the child was actually
+    // sent.
     let length = content_length(&head);
+    let mut received = Vec::new();
     if length > 0 {
-        let mut body = vec![0u8; length];
-        reader.read_exact(&mut body)?;
+        received = vec![0u8; length];
+        reader.read_exact(&mut received)?;
     }
 
     let request_line = head.first().map_or("", String::as_str);
@@ -68,7 +83,15 @@ pub fn answer(mut stream: TcpStream, ready: bool, pacing: &Pacing) -> std::io::R
         return serve_stream(&mut stream, pacing);
     }
     if path.ends_with("/v1/echo") {
-        return serve_complete(&mut stream, "200 OK", "text/plain", &head.join("\n"));
+        // Lossy on purpose: a body that is not text is still worth showing a
+        // reader of a failure, and this stub is not the place to decide that a
+        // request was malformed.
+        let body = format!(
+            "{}\nalias: {alias}\nbody: {}",
+            head.join("\n"),
+            String::from_utf8_lossy(&received)
+        );
+        return serve_complete(&mut stream, "200 OK", "text/plain", &body);
     }
     serve_complete(
         &mut stream,

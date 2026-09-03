@@ -18,10 +18,15 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 mod support;
-use support::{MODEL, ModelsRoot, arrivals, catalog_text, get, post, request, serving, status};
+use support::{
+    MODEL, ModelsRoot, Serving, arrivals, catalog_text, get, post, request, serving, status,
+};
 
 /// The completion path, which the stub answers with a paced stream.
 const COMPLETIONS: &str = "/models/gemma3/v1/chat/completions";
+
+/// The same completions, reached by the endpoint that reads the body.
+const GENERIC_COMPLETIONS: &str = "/v1/chat/completions";
 
 /// A body of the shape a client sends, so the relay forwards a real one.
 const BODY: &str = "{\"model\":\"gemma3\",\"stream\":true}";
@@ -44,10 +49,13 @@ fn production() -> Duration {
     Duration::from_millis(u64::from(EVENTS * GAP_MS))
 }
 
-#[test]
-fn a_paced_stream_reaches_the_caller_as_it_arrives() {
-    let serving = serving(&paced(""), ModelsRoot::with(&[MODEL]));
-
+/// Drives one paced stream and asserts it arrived as it was produced.
+///
+/// Shared by the two endpoints because the property is one property: how a
+/// request names its model has nothing to do with when its response arrives.
+/// Writing the arrangement twice would say the same thing twice and leave the
+/// difference -- which endpoint was used -- buried in the middle of it.
+fn assert_arrives_progressively(serving: &Serving, path: &str) {
     // The timed request must find a ready child, and this is what makes it
     // one. A child starts on the first request for its entry, so timing that
     // request would measure process spawn and a health poll as well as the
@@ -66,7 +74,7 @@ fn a_paced_stream_reaches_the_caller_as_it_arrives() {
         "the child is ready before anything is timed:\n{warmed}"
     );
 
-    let (body, times) = arrivals(serving.address(), &post(COMPLETIONS, BODY));
+    let (body, times) = arrivals(serving.address(), &post(path, BODY));
 
     assert!(
         body.contains("data: {\"n\":0}") && body.contains("data: {\"n\":4}"),
@@ -90,6 +98,29 @@ fn a_paced_stream_reaches_the_caller_as_it_arrives() {
         "the first event arrives in the first half, or the whole body was \
          buffered; arrivals were {times:?}"
     );
+}
+
+#[test]
+fn a_paced_stream_reaches_the_caller_as_it_arrives() {
+    let serving = serving(&paced(""), ModelsRoot::with(&[MODEL]));
+
+    assert_arrives_progressively(&serving, COMPLETIONS);
+}
+
+/// The proof that reading a request body did not cost the response its
+/// streaming.
+///
+/// The generic endpoint buffers what the caller sent, because the model it
+/// routes on is inside it. Nothing about that touches the response, and this
+/// is what says so: if a change ever routed this endpoint through something
+/// that re-framed a reply, the events would arrive together and this fails.
+/// Asserting that the code calls the relay would prove less -- the property is
+/// that events arrive early and spread out, so that is what is measured.
+#[test]
+fn the_generic_endpoint_streams_although_it_read_the_request_body() {
+    let serving = serving(&paced(""), ModelsRoot::with(&[MODEL]));
+
+    assert_arrives_progressively(&serving, GENERIC_COMPLETIONS);
 }
 
 #[test]

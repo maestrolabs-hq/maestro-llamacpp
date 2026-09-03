@@ -12,6 +12,7 @@ use std::fmt::Write as _;
 use std::io::{BufRead, Read as _};
 use std::net::SocketAddr;
 
+use super::endpoint::Endpoint;
 use crate::launch::Failure;
 
 /// How many bytes of head the router will read before refusing.
@@ -24,26 +25,39 @@ pub(super) const MAX_HEAD_BYTES: usize = 64 * 1024;
 /// How many header lines the router will accept.
 pub(super) const MAX_HEADERS: usize = 100;
 
-/// The path shape a dedicated endpoint carries.
-const PREFIX: &str = "/models/";
+/// What a request said about the length of its body.
+///
+/// Three states rather than a number, because they are three different
+/// requests and a router that folded them into one would answer two of them
+/// wrongly. Saying nothing is a request with no body. Saying something
+/// unreadable is a request this router cannot honour -- forwarding it would
+/// hand the child a declared length with nothing behind it, and defaulting it
+/// to zero would refuse the request later for something else entirely.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Length {
+    /// No `Content-Length` header at all.
+    Absent,
+    /// A length this router can act on.
+    Given(usize),
+    /// A header that will not parse, kept as received so a refusal can quote
+    /// back what arrived.
+    Malformed(String),
+}
 
 /// A parsed request head.
 ///
-/// The identifier and the suffix are split apart at parse time because every
-/// caller wants them separately: one selects the entry, the other becomes the
-/// path sent upstream.
+/// The endpoint is resolved at parse time because every caller wants it: it
+/// says which model answers, and what the child is asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Head {
     /// The method, passed through unchanged.
     pub(super) method: String,
-    /// The model identifier the path named.
-    pub(super) id: String,
-    /// What the child is asked for, with the prefix and identifier removed.
-    pub(super) suffix: String,
+    /// Which endpoint the path addressed.
+    pub(super) endpoint: Endpoint,
     /// Every header as received, in order.
     pub(super) headers: Vec<(String, String)>,
-    /// The declared body length, or zero when there is none.
-    pub(super) content_length: usize,
+    /// What the request said about its body's length.
+    pub(super) length: Length,
     /// Whether the request announced chunked framing, which this router
     /// refuses rather than guesses at.
     pub(super) chunked: bool,
@@ -98,9 +112,8 @@ fn oversized(reason: &str) -> Failure {
 ///
 /// # Errors
 ///
-/// Returns a [`Failure`] when there is no request line, when the path does
-/// not carry the dedicated-endpoint shape, or when it names an identifier
-/// with nothing after it.
+/// Returns a [`Failure`] when there is no request line, or when the path is
+/// not a shape this router serves.
 pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
     let mut words = lines
         .first()
@@ -114,10 +127,10 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
         .next()
         .ok_or_else(|| malformed("a request line with no path"))?;
 
-    let (id, suffix) = split(path)?;
+    let endpoint = Endpoint::of(path)?;
 
     let mut headers = Vec::new();
-    let mut content_length = 0;
+    let mut length = Length::Absent;
     let mut chunked = false;
     for line in lines.iter().skip(1) {
         // A line with no colon is not a header. Skipped rather than refused:
@@ -128,7 +141,12 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
         };
         let (name, value) = (name.trim(), value.trim());
         if name.eq_ignore_ascii_case("content-length") {
-            content_length = value.parse().unwrap_or(0);
+            // Kept rather than defaulted. A length that will not parse is a
+            // fact about the request, and the one caller that can still send a
+            // status is the one that should decide what to do about it.
+            length = value
+                .parse()
+                .map_or_else(|_| Length::Malformed(value.to_owned()), Length::Given);
         }
         if name.eq_ignore_ascii_case("transfer-encoding")
             && value.to_ascii_lowercase().contains("chunked")
@@ -140,37 +158,30 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
 
     Ok(Head {
         method,
-        id,
-        suffix,
+        endpoint,
         headers,
-        content_length,
+        length,
         chunked,
     })
 }
 
-/// The identifier a path names, and what the child is asked for.
-fn split(path: &str) -> Result<(String, String), Failure> {
-    let shape = format!("the shape is {PREFIX}<model>/<path>");
-    let rest = path
-        .strip_prefix(PREFIX)
-        .ok_or_else(|| malformed(&format!("'{path}' is not a dedicated endpoint: {shape}")))?;
-
-    match rest.split_once('/') {
-        Some((id, suffix)) if !id.is_empty() && !suffix.is_empty() => {
-            Ok((id.to_owned(), format!("/{suffix}")))
-        }
-        _ => Err(malformed(&format!(
-            "'{path}' names a model with nothing after it: {shape}"
-        ))),
-    }
-}
-
-/// A request this router does not serve, and the shape of one it does.
+/// A request this router does not serve.
 fn malformed(reason: &str) -> Failure {
     Failure::Unavailable(reason.to_owned())
 }
 
 impl Head {
+    /// How many bytes of body to copy, which is none unless one was declared.
+    ///
+    /// A malformed length never reaches here: it is refused where a status is
+    /// still possible, which is before anything is forwarded.
+    pub(super) fn body_bytes(&self) -> usize {
+        match self.length {
+            Length::Given(bytes) => bytes,
+            Length::Absent | Length::Malformed(_) => 0,
+        }
+    }
+
     /// The head to send upstream: the same method, the suffix as the path,
     /// pointed at the child and asked to close when done.
     ///
@@ -179,7 +190,7 @@ impl Head {
     pub(super) fn rewrite(&self, upstream: SocketAddr) -> String {
         let mut text = String::new();
         let method = &self.method;
-        let suffix = &self.suffix;
+        let suffix = self.endpoint.suffix();
         // Writing to a String cannot fail, so this says so once rather than
         // dressing an impossibility up as an error this function returns.
         let infallible = "writing to a String cannot fail";
@@ -225,38 +236,29 @@ mod tests {
     }
 
     #[test]
-    fn a_path_splits_into_an_identifier_and_a_suffix() {
+    fn a_head_carries_the_endpoint_its_path_addressed() {
         let head = head_of("/models/gemma3/v1/chat/completions");
 
-        assert_eq!(head.id, "gemma3", "the segment after the prefix selects");
         assert_eq!(
-            head.suffix, "/v1/chat/completions",
-            "and everything after it is what the child is asked for"
+            head.endpoint,
+            Endpoint::Dedicated {
+                id: "gemma3".to_owned(),
+                suffix: "/v1/chat/completions".to_owned(),
+            },
+            "which shape a path addressed is resolved at parse time"
         );
         assert_eq!(head.method, "POST", "the method is passed through");
     }
 
     #[test]
-    fn a_path_that_does_not_name_models_is_refused() {
-        let refusal = parse(&lines(&["POST /v1/chat/completions HTTP/1.1"]))
-            .expect_err("only the dedicated shape is served in this slice");
+    fn a_path_that_is_no_shape_the_router_serves_is_refused() {
+        let refusal = parse(&lines(&["POST /health HTTP/1.1"]))
+            .expect_err("the router serves two shapes and no others");
 
         assert!(
             refusal.to_string().contains("/models/"),
-            "the refusal says what shape was expected: {refusal}"
+            "the refusal says what shapes were expected: {refusal}"
         );
-    }
-
-    #[test]
-    fn a_path_with_no_suffix_after_the_identifier_is_refused() {
-        for path in ["/models/gemma3", "/models/gemma3/"] {
-            let refusal = parse(&lines(&[&format!("GET {path} HTTP/1.1")]))
-                .expect_err("an identifier with nothing after it asks for nothing");
-            assert!(
-                refusal.to_string().contains("gemma3"),
-                "the refusal names what was asked for: {refusal}"
-            );
-        }
     }
 
     #[test]
@@ -273,14 +275,38 @@ mod tests {
         .expect("a well-formed head");
 
         assert_eq!(
-            head.content_length, 42,
+            head.length,
+            Length::Given(42),
             "a client is entitled to send a lowercase header name"
         );
     }
 
     #[test]
-    fn a_head_without_a_length_carries_no_body() {
-        assert_eq!(head_of("/models/gemma3/v1/models").content_length, 0);
+    fn a_head_without_a_length_says_so_rather_than_declaring_nothing() {
+        assert_eq!(
+            head_of("/models/gemma3/v1/echo").length,
+            Length::Absent,
+            "absent and zero are different requests, and only one of them is \
+             a caller that forgot a header"
+        );
+    }
+
+    #[test]
+    fn a_length_that_will_not_parse_is_kept_rather_than_defaulted() {
+        for value in ["abc", "-1", ""] {
+            let head = parse(&lines(&[
+                "POST /v1/chat/completions HTTP/1.1",
+                &format!("Content-Length: {value}"),
+            ]))
+            .expect("a head the router can still refuse deliberately");
+
+            assert_eq!(
+                head.length,
+                Length::Malformed(value.to_owned()),
+                "defaulting this to zero would forward a head declaring a body \
+                 with nothing behind it, and blame whatever failed next"
+            );
+        }
     }
 
     #[test]
@@ -296,7 +322,7 @@ mod tests {
             "detected here so the caller can refuse it rather than mangle a body"
         );
         assert!(
-            !head_of("/models/gemma3/v1/models").chunked,
+            !head_of("/models/gemma3/v1/echo").chunked,
             "and absent when it was not announced"
         );
     }

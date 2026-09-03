@@ -31,6 +31,11 @@ struct Options {
     ready_after: Duration,
     exit_after: Option<Duration>,
     exit_code: u8,
+    /// Which entry this stub was started as, taken from `--alias`.
+    ///
+    /// Every child is this same binary, so a test that asserts a request
+    /// reached the right one needs the reply to say which one answered.
+    alias: String,
     pacing: Pacing,
 }
 
@@ -84,10 +89,11 @@ fn serve(listener: &TcpListener, options: &Options) -> ExitCode {
             die_after: options.pacing.die_after,
             hangup_marker: options.pacing.hangup_marker.clone(),
         };
+        let alias = options.alias.clone();
         thread::spawn(move || {
             // A failed reply is a client that hung up. Nothing here is
             // durable, so the next connection is the only thing that matters.
-            drop(reply::answer(stream, ready, &pacing));
+            drop(reply::answer(stream, ready, &pacing, &alias));
         });
     }
     ExitCode::SUCCESS
@@ -104,6 +110,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut ready_after = Duration::ZERO;
     let mut exit_after = None;
     let mut exit_code = 0u8;
+    let mut alias = String::new();
     let mut events = 3usize;
     let mut gap = Duration::ZERO;
     let mut die_after = None;
@@ -125,6 +132,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
                 exit_after = Some(Duration::from_millis(number(&value()?, "--exit-after")?));
             }
             "--exit-code" => exit_code = number(&value()?, "--exit-code")?,
+            "--alias" => alias = value()?,
             "--stream-events" => events = number(&value()?, "--stream-events")?,
             "--stream-gap" => gap = Duration::from_millis(number(&value()?, "--stream-gap")?),
             "--die-after-events" => die_after = Some(number(&value()?, "--die-after-events")?),
@@ -138,6 +146,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
         ready_after,
         exit_after,
         exit_code,
+        alias,
         pacing: Pacing {
             events,
             gap,

@@ -1,4 +1,4 @@
-//! Routing one dedicated endpoint, through the interface a caller holds.
+//! Routing both endpoints, through the interface a caller holds.
 //!
 //! Everything the router does here is real: it binds a port, accepts a
 //! connection, parses a head, starts a child, opens a socket to it and copies
@@ -34,15 +34,205 @@ fn an_unknown_identifier_is_not_found_and_names_what_the_catalog_carries() {
 }
 
 #[test]
-fn a_path_outside_the_dedicated_shape_is_refused() {
+fn a_path_that_is_no_shape_the_router_serves_is_refused() {
     let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
 
-    let reply = request(serving.address(), &get("/v1/chat/completions"));
+    let reply = request(serving.address(), &get("/health"));
 
     assert_eq!(
         status(&reply),
         Some(404),
-        "routing by the body's model field is slice 4:\n{reply}"
+        "the router serves two shapes and no others:\n{reply}"
+    );
+}
+
+/// A second model file, so routing between two entries is observable.
+const SECOND_MODEL: &str = "cache/qwen/qwen3-8b.gguf";
+
+/// A catalog carrying two entries, which is the smallest catalog in which
+/// "the request reached the right child" can mean anything at all.
+fn two_entries() -> String {
+    catalog_text(&format!("\n[models.qwen38]\npath = \"{SECOND_MODEL}\"\n"))
+}
+
+#[test]
+fn the_body_decides_which_child_answers() {
+    let serving = serving(&two_entries(), ModelsRoot::with(&[MODEL, SECOND_MODEL]));
+
+    for wanted in ["gemma3", "qwen38"] {
+        let body = format!("{{\"model\":\"{wanted}\"}}");
+        let reply = request(serving.address(), &post("/v1/echo", &body));
+
+        assert_eq!(status(&reply), Some(200), "a child answered:\n{reply}");
+        assert!(
+            reply.contains(&format!("alias: {wanted}")),
+            "the child started for '{wanted}' is the one that answered, \
+             observed at the child rather than assumed at the router:\n{reply}"
+        );
+        assert!(
+            reply.contains(&format!("body: {body}")),
+            "the child received the caller's own bytes. The router read this \
+             body to learn which model answers, and forwarding what it parsed \
+             rather than what it was given would change a request it does not \
+             own:\n{reply}"
+        );
+    }
+}
+
+#[test]
+fn the_generic_endpoint_strips_no_prefix_from_the_path() {
+    let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
+
+    let reply = request(
+        serving.address(),
+        &post("/v1/echo", "{\"model\":\"gemma3\"}"),
+    );
+
+    assert!(
+        reply.contains("POST /v1/echo HTTP/1.1"),
+        "the caller's own path is what the child is asked for, because the \
+         model was named in the body rather than taken out of the path:\n{reply}"
+    );
+}
+
+#[test]
+fn a_body_naming_no_such_model_is_not_found_and_names_the_catalog() {
+    let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
+
+    let reply = request(
+        serving.address(),
+        &post("/v1/chat/completions", "{\"model\":\"nowhere\"}"),
+    );
+
+    assert_eq!(status(&reply), Some(404), "no such entry:\n{reply}");
+    assert!(
+        reply.contains("nowhere") && reply.contains("gemma3"),
+        "named the same way the dedicated endpoint names it:\n{reply}"
+    );
+}
+
+#[test]
+fn a_body_naming_no_model_at_all_is_a_bad_request() {
+    let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
+
+    let reply = request(
+        serving.address(),
+        &post("/v1/chat/completions", "{\"messages\":[]}"),
+    );
+
+    assert_eq!(
+        status(&reply),
+        Some(400),
+        "the generic endpoint has nothing else to route on:\n{reply}"
+    );
+    assert!(
+        reply.contains("/models/"),
+        "and says which endpoint needs no such field:\n{reply}"
+    );
+}
+
+#[test]
+fn a_generic_request_with_no_declared_body_is_told_what_is_missing() {
+    let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
+
+    // What an OpenAI-compatible client sends to retrieve one model. It is not
+    // the listing -- that is `/v1/models` exactly -- so it arrives here as a
+    // generic request with nothing to route on.
+    let reply = request(serving.address(), &get("/v1/models/gemma3"));
+
+    assert_eq!(
+        status(&reply),
+        Some(411),
+        "the missing thing is a declared body, and saying so is not the same \
+         as a parser complaining about an empty one:\n{reply}"
+    );
+    assert!(
+        reply.contains("Content-Length") && reply.contains("/models/"),
+        "the refusal names the header it wanted and the endpoint that needs \
+         no body at all:\n{reply}"
+    );
+}
+
+#[test]
+fn a_length_the_router_cannot_read_is_refused_rather_than_treated_as_none() {
+    let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
+
+    // Defaulting this to zero would forward the header as received and leave
+    // the child waiting for a body nobody is going to send.
+    let reply = request(
+        serving.address(),
+        "POST /models/gemma3/v1/echo HTTP/1.1\r\n\
+         Host: router\r\n\
+         Content-Length: abc\r\n\
+         Connection: close\r\n\
+         \r\n",
+    );
+
+    assert_eq!(
+        status(&reply),
+        Some(400),
+        "a length that will not parse is refused where a status is still \
+         possible:\n{reply}"
+    );
+    assert!(
+        reply.contains("abc"),
+        "quoting back what arrived, so the reader sees what the router saw:\n{reply}"
+    );
+}
+
+#[test]
+fn a_body_larger_than_the_router_will_read_is_refused_before_it_is_read() {
+    let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
+
+    // Declared and not sent. A router that read before deciding would block
+    // here waiting for sixty-four megabytes that are never coming; one that
+    // allocated before deciding would take them from a stranger's say-so.
+    let declared = 64 * 1024 * 1024;
+    let reply = request(
+        serving.address(),
+        &format!(
+            "POST /v1/chat/completions HTTP/1.1\r\n\
+             Host: router\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {declared}\r\n\
+             Connection: close\r\n\
+             \r\n"
+        ),
+    );
+
+    assert_eq!(
+        status(&reply),
+        Some(413),
+        "an oversized body has its own status, not the 400 that every other \
+         unreadable body gets:\n{reply}"
+    );
+    assert!(
+        reply.contains(&declared.to_string()) && reply.contains("this router will read"),
+        "the refusal names what was declared and what the limit is, so the \
+         reader knows which of the two to change:\n{reply}"
+    );
+}
+
+#[test]
+fn the_listing_answers_from_the_catalog_without_starting_anything() {
+    // A models root with no files in it: starting any child would fail on the
+    // missing model, so a 200 here is proof that none was attempted.
+    let serving = serving(&two_entries(), ModelsRoot::with(&[]));
+
+    let reply = request(serving.address(), &get("/v1/models"));
+
+    assert_eq!(
+        status(&reply),
+        Some(200),
+        "the router answers this:\n{reply}"
+    );
+    assert!(
+        reply.contains("gemma3") && reply.contains("qwen38"),
+        "every entry the catalog carries:\n{reply}"
+    );
+    assert!(
+        reply.contains("\"object\":\"list\""),
+        "in the shape an OpenAI-compatible client expects:\n{reply}"
     );
 }
 
@@ -76,6 +266,12 @@ fn a_body_is_forwarded_to_the_child_with_its_headers() {
     let reply = request(serving.address(), &post("/models/gemma3/v1/echo", body));
 
     assert_eq!(status(&reply), Some(200), "the child answered:\n{reply}");
+    assert!(
+        reply.contains(&format!("body: {body}")),
+        "the body itself reaches the child, byte for byte. This endpoint names \
+         its model in the path and never reads the body, so what arrives here \
+         is what was copied straight through:\n{reply}"
+    );
     assert!(
         reply.contains(&format!("Content-Length: {}", body.len())),
         "the declared length reaches the child unchanged:\n{reply}"

@@ -28,8 +28,8 @@ pub fn stub_binary() -> PathBuf {
 
 /// The status code from `GET /health`, or `None` when nothing answered.
 ///
-/// Hand-written because this repository has one dependency and it parses
-/// TOML. One request and one status line do not earn a second.
+/// Hand-written because neither of this repository's two dependencies speaks
+/// HTTP. One request and one status line do not earn a third.
 pub fn health(address: impl ToSocketAddrs) -> Option<u16> {
     let mut stream = TcpStream::connect(address).ok()?;
     stream
@@ -109,9 +109,9 @@ fn connected(address: impl ToSocketAddrs) -> TcpStream {
 
 /// Sends one raw request and reads the whole reply as text.
 ///
-/// Hand-written for the same reason `health` is: this repository has one
-/// dependency and it parses TOML. One request and one reply do not earn a
-/// second.
+/// Hand-written for the same reason `health` is: neither of this repository's
+/// two dependencies speaks HTTP. One request and one reply do not earn a
+/// third.
 pub fn request(address: impl ToSocketAddrs, raw: &str) -> String {
     let mut stream = connected(address);
     stream.write_all(raw.as_bytes()).expect("write");
@@ -240,6 +240,22 @@ impl Serving {
 /// test rather than a failing one.
 #[must_use]
 pub fn serving(catalog: &str, root: ModelsRoot) -> Serving {
+    budgeted(catalog, root, None)
+}
+
+/// The same, under a stated memory budget.
+///
+/// Separate from `serving` so the tests that are not about eviction say
+/// nothing about it, and so the ones that are state their ceiling at the call
+/// rather than through the environment -- which is process-global and would
+/// race every other test in the binary.
+///
+/// # Panics
+///
+/// If the catalog is not usable or the port cannot be bound, which is a broken
+/// test rather than a failing one.
+#[must_use]
+pub fn budgeted(catalog: &str, root: ModelsRoot, limit_mib: Option<u32>) -> Serving {
     let parsed = maestro_llamacpp::catalog::Catalog::parse(catalog).expect("a usable catalog");
     let server = maestro_llamacpp::launch::Server::located(Some(&stub_binary()))
         .expect("the stub binary is built by cargo test");
@@ -248,6 +264,7 @@ pub fn serving(catalog: &str, root: ModelsRoot) -> Serving {
         parsed,
         root.path().to_path_buf(),
         server,
+        maestro_llamacpp::admission::Budget::new(limit_mib),
     )
     .expect("an ephemeral loopback port");
 

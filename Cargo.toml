@@ -19,9 +19,9 @@ description = "Router that supervises llama.cpp server processes and serves one 
 # the commands in README.md work as written.
 default-run = "model-router"
 
-# The interface the tests link against. It carries the catalog and nothing
-# else: the library seam exists for that one consumer, and widening it would
-# be a promise no caller has asked for.
+# The interface the tests link against. It carries what those tests drive and
+# nothing more: the library seam exists for that one consumer, and widening it
+# would be a promise no caller has asked for.
 [lib]
 name = "maestro_llamacpp"
 path = "src/lib.rs"
@@ -50,7 +50,12 @@ path = "src/bin/stub_llama_server/main.rs"
 # is on because it gates the `Table` value type, not because anything here
 # derives: the catalog is walked by hand so each error can name the entry and
 # the field it came from, which a derived deserializer cannot do.
+# The request body must be interpreted correctly, and a hand-written scanner
+# is the risk rather than the saving: the key that routes is only findable by
+# something that tracks strings, escapes and depth, and getting it wrong sends
+# the request to the wrong model, which answers plausibly.
 [dependencies]
+serde_json = "1"
 toml = { version = "1.1", default-features = false, features = [
     "parse",
     "serde",

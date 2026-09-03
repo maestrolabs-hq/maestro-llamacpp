@@ -39,13 +39,22 @@ const BUFFER: usize = 8 * 1024;
 pub(super) fn run(
     head: &Head,
     child: &Child,
+    body: Option<&[u8]>,
     reader: &mut BufReader<TcpStream>,
     downstream: &mut TcpStream,
 ) -> std::io::Result<()> {
     let endpoint = child.endpoint();
     let mut upstream = TcpStream::connect(endpoint)?;
     upstream.write_all(head.rewrite(endpoint).as_bytes())?;
-    forward_body(head, reader, &mut upstream)?;
+    match body {
+        // Already read, because the generic endpoint had to look inside it to
+        // learn which model answers. Written from what was read rather than
+        // from the socket, which has nothing left on it.
+        Some(bytes) => upstream.write_all(bytes)?,
+        // Never read, so it is copied straight through. The dedicated
+        // endpoint names its model in the path and has no reason to look.
+        None => forward_body(head, reader, &mut upstream)?,
+    }
     upstream.flush()?;
 
     copy_response(&mut upstream, downstream);
@@ -65,7 +74,7 @@ fn forward_body(
     reader: &mut BufReader<TcpStream>,
     upstream: &mut TcpStream,
 ) -> std::io::Result<()> {
-    let mut remaining = head.content_length;
+    let mut remaining = head.body_bytes();
     let mut buffer = [0u8; BUFFER];
     while remaining > 0 {
         let want = remaining.min(BUFFER);

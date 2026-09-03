@@ -98,18 +98,38 @@ impl Server {
         }
     }
 
+    /// Where this entry's model file is, if the models root carries it.
+    ///
+    /// Separate from [`Server::start`] so a caller can ask before doing
+    /// something it cannot undo. Eviction is the caller that needs it: ending
+    /// a warm model to make room, and only then discovering that the wanted
+    /// one has no file, leaves the operator with neither.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`Failure`] when the catalog names a file that is not there,
+    /// which is a stale path, an unmounted root, or a half-finished download.
+    pub fn model_file(entry: &Entry, root: &Path) -> Result<PathBuf, Failure> {
+        let model = entry.path.resolve(root);
+        if model.is_file() {
+            Ok(model)
+        } else {
+            Err(Failure::Unavailable(format!(
+                "entry '{}': no model file at '{}'",
+                entry.id,
+                model.display()
+            )))
+        }
+    }
+
     /// A running child, before anything has asked whether it is ready.
     fn spawn(&self, entry: &Entry, root: &Path) -> Result<Child, Failure> {
         // Checked before spawning, so a missing model is reported as a missing
         // model rather than as whatever exit status the server chooses for it.
-        let model = entry.path.resolve(root);
-        if !model.is_file() {
-            return Err(Failure::Unavailable(format!(
-                "entry '{}': no model file at '{}'",
-                entry.id,
-                model.display()
-            )));
-        }
+        // Checked again here rather than trusted from a caller: `start` is
+        // reachable directly, and a precondition only some callers honour is
+        // not a precondition.
+        let _model = Self::model_file(entry, root)?;
 
         let port = free_port().map_err(|error| {
             Failure::Unavailable(format!(

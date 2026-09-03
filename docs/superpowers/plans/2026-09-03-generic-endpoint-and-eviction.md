@@ -276,7 +276,18 @@ line of output telling them what they are not getting.
 
 ### 4. What happens to an in-flight request when its child is evicted
 
-**Nothing. A child with a request in flight is never an eviction candidate.**
+**Nothing. A child with a request in flight is never unloaded.**
+
+> **Corrected after review.** As first written this said "never an eviction
+> candidate", and that was false of what shipped. A child read as idle *is*
+> selected as a candidate, and can gain a reader before the decision reaches
+> its slot, because the fast path takes no admission lock. What the `Arc`
+> guarantees is that the process is not killed; what it does not guarantee is
+> that the slot is not emptied under it, which loses the router's own account
+> of what is loaded. The check below is therefore made twice: once to decide,
+> and again at the moment the slot is taken, where it stops being reversible.
+> A candidate that has gained a reader by then is not unloaded and the request
+> is refused.
 
 The mechanism exists and is already proven. A `Child` is held behind an `Arc`,
 and `Drop for Child` kills the process. A relay clones that `Arc` and holds it
@@ -298,6 +309,12 @@ Holding the lock is what makes the count trustworthy. A relay can only obtain a
 reference by locking the slot first, so a thread that holds the lock and sees a
 count of one knows no other thread is about to clone it. Without the lock the
 count would be a guess that goes stale between reading it and acting on it.
+
+That staleness is exactly what the first version of this plan overlooked. The
+count is read once to build the decision and once more to act on it, and the
+second reading is the one that matters: between them the entry's slot is
+unlocked, and the fast path -- which takes no admission lock, by design -- can
+hand out a reference to the very entry about to be unloaded.
 
 That reasoning is a rule the type has to keep, not an observation about today's
 code, so it is stated as an invariant of the slot type. Slice 1 did the same
@@ -1221,9 +1238,21 @@ Also out of scope, each with the reason it was left:
   demand-driven only: nothing is unloaded until something else needs the room.
   An idle timeout is a second policy with its own configuration, and no caller
   has asked for it.
-- **Connection reuse between the router and its children**, chunked request
-  bodies, and graceful termination -- all still out, all for the reasons slices
-  2 and 3 gave.
+- **Connection reuse between the router and its children**, and chunked request
+  bodies -- both still out, for the reasons slices 2 and 3 gave.
+- **Handling a signal, and therefore stopping children on the way out.** Still
+  out: it needs a dependency and a Windows job object, which is a change with
+  its own gates to clear. But the reason slices 2 and 3 gave -- "no gain in a
+  slice with nothing to serve" -- is spent, and what deferring it costs has
+  grown. `serve` never returns, so `Router::stop` is never reached, and a
+  `SIGTERM` from a service manager leaves every child running. This slice can
+  leave as many as the budget allowed to be resident, where slice 3 could leave
+  one. Worse, the budget does not survive the restart: a fresh router counts an
+  empty table while the orphans still hold real memory, and then admits a whole
+  budget on top of them -- which surfaces as a model that mysteriously died,
+  looking exactly like a bad estimate. Recorded in `README.md` with the command
+  to find them, because the interaction is with the one number this slice asks
+  operators to trust.
 - **Retiring the external Python router.** The specification's migration stages
   put retirement after parity is proven, and Task 9 proves parity for one
   operator on one machine. Retirement is its own change.

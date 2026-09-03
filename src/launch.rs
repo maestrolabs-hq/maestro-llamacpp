@@ -43,7 +43,7 @@ pub use server::Server;
 /// The proxy is the second caller and it does branch. A child that missed its
 /// startup budget is a gateway timeout, and a child that could never start is
 /// a bad gateway, so the difference has to survive the trip out of this
-/// module. Two variants rather than one per cause: these are the two the
+/// module. Three variants rather than one per cause: these are the three the
 /// status mapping distinguishes, and a variant nothing reads would be the
 /// speculative promise the original comment was right to refuse.
 ///
@@ -55,11 +55,18 @@ pub enum Failure {
     NotReady(String),
     /// A server could not be located, or a child could not be started at all.
     Unavailable(String),
+    /// A child was not started, because there was no room for it.
+    ///
+    /// Distinct from [`Failure::Unavailable`] because nothing was attempted:
+    /// the entry is serviceable and the machine is not broken, so a caller
+    /// that waits for something else to finish may get a different answer.
+    /// That difference is what the status codes carry.
+    Refused(String),
 }
 
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (Self::NotReady(message) | Self::Unavailable(message)) = self;
+        let (Self::NotReady(message) | Self::Unavailable(message) | Self::Refused(message)) = self;
         write!(f, "{message}")
     }
 }

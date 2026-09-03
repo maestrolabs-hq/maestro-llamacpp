@@ -15,6 +15,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;
 
+use maestro_llamacpp::admission::Budget;
 use maestro_llamacpp::catalog::Catalog;
 use maestro_llamacpp::launch::{Server, models_root};
 use maestro_llamacpp::proxy::Router;
@@ -59,10 +60,15 @@ fn report(outcome: Result<(), String>) -> ExitCode {
     }
 }
 
-/// Serves every entry in the catalog on its own dedicated endpoint.
+/// Serves every entry in the catalog, on its own endpoint and on the shared
+/// one.
 ///
 /// Long-running by design, unlike `launch`: now there is something to serve.
-/// It returns only when the process is ended.
+/// It returns only when the process is ended -- and because that end is
+/// usually a signal, `Router::stop` is never reached and the children outlive
+/// it. What that costs, and how to find them afterwards, is in `README.md`
+/// under what eviction never does. A handler needs a dependency and a Windows
+/// job object, so it is a change of its own rather than a line here.
 fn serve(catalog: &Path, address: Option<&str>) -> Result<(), String> {
     let parsed = read(catalog)?;
     let root = models_root().map_err(|failure| failure.to_string())?;
@@ -73,10 +79,24 @@ fn serve(catalog: &Path, address: Option<&str>) -> Result<(), String> {
         .parse()
         .map_err(|error| format!("'{wanted}' is not an address to bind: {error}"))?;
 
-    let router = Router::bind(wanted, parsed, root, server).map_err(|f| f.to_string())?;
+    let budget = Budget::configured().map_err(|failure| failure.to_string())?;
+    // Said at startup rather than left to be discovered: whether anything is
+    // ever evicted is the difference between a router that swaps models and
+    // one that fills memory until a load fails, and an operator who mistyped
+    // the variable would otherwise find out only under load.
+    let budget_line = match budget.limit_mib() {
+        Some(limit) => format!("memory budget: {limit} MiB, so models are unloaded to make room"),
+        None => "memory budget: none set, so nothing is ever unloaded \
+             (set MAESTRO_MEMORY_BUDGET_MIB)"
+            .to_owned(),
+    };
+
+    let router = Router::bind(wanted, parsed, root, server, budget).map_err(|f| f.to_string())?;
     let bound = router.address();
     println!("serving on http://{bound}");
     println!("  http://{bound}/models/<model>/v1/chat/completions");
+    println!("  http://{bound}/v1/chat/completions   (routed by the body's model)");
+    println!("{budget_line}");
     println!("a streamed reply is passed through as it arrives");
 
     router.serve();
@@ -93,11 +113,10 @@ fn read(catalog: &Path) -> Result<Catalog, String> {
 
 /// Starts one entry, proves it answers, and stops it again.
 ///
-/// Deliberately not long-running. Staying up until interrupted needs a signal
-/// handler, and therefore a dependency, for no gain in a slice with nothing to
-/// serve. Launching, proving readiness and stopping is the whole of what this
-/// slice can honestly claim, and it doubles as the manual check against a real
-/// `llama-server`.
+/// Deliberately not long-running: proving that a child starts, answers and
+/// ends is the whole of what this command claims, and it doubles as the manual
+/// check against a real `llama-server`. Serving is `serve`'s job, and what
+/// that does about signals is recorded there.
 fn launch(catalog: &Path, id: &str) -> Result<(), String> {
     let parsed = read(catalog)?;
     let entry = parsed

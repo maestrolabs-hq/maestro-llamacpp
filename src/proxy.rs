@@ -1,6 +1,11 @@
-//! Serving one dedicated endpoint per model, and relaying it to a child.
+//! Serving every model in the catalog, and relaying each one to a child.
 //!
-//! What a caller must know to use this correctly is five things.
+//! Two shapes reach the same children. A dedicated endpoint names its model in
+//! the path; the generic one takes it from the request body, which is what an
+//! OpenAI-compatible client already sends. `GET /v1/models` is answered from
+//! the catalog without starting anything.
+//!
+//! What a caller must know to use this correctly is six things.
 //!
 //! [`Router::bind`] reserves the public port and returns immediately. Nothing
 //! is served and no child is started until [`Router::serve`] runs, so a caller
@@ -17,7 +22,14 @@
 //! `serve` is still running -- leaves its children alive after the process
 //! that started them is gone. That was measured, not assumed: forty-five stub
 //! servers outlived the test binaries that started them before this method
-//! existed. A caller that ends without calling it leaves them behind.
+//! existed. A caller that ends without calling it leaves them behind, and a
+//! router ended by a signal never gets the chance to call it at all.
+//!
+//! [`Router::bind`] takes a memory budget, and that is the one argument here
+//! that can end a process. Under a budget, a request for a model that does not
+//! fit unloads the coldest idle one to make room; a model something is reading
+//! from is never chosen, and when the only room is held by one of those the
+//! request is refused instead. Without a budget nothing is ever unloaded.
 //!
 //! The router binds loopback only, as children do. Serving a network is a
 //! security design this repository has not written, and a caller that asks for
@@ -34,18 +46,24 @@
 //! extending it as though it were is the mistake this paragraph exists to
 //! prevent.
 
-use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::thread;
 
+use crate::admission::Budget;
 use crate::catalog::{Catalog, Entry};
 use crate::launch::{Child, Failure, Server};
 
 mod answer;
+mod body;
+mod endpoint;
 mod head;
+mod loaded;
 mod relay;
+mod slots;
+
+use slots::Slots;
 
 /// The public listener, and everything a request needs to be answered.
 pub struct Router {
@@ -58,15 +76,7 @@ struct Shared {
     catalog: Catalog,
     root: PathBuf,
     server: Server,
-    /// One lock over the whole map. A request holds it only long enough to
-    /// find or start a child, never across a relay: holding it while bytes
-    /// flowed would serialise every caller behind the slowest stream, which
-    /// for a generating model is minutes.
-    ///
-    /// The honest limit is that starting one child blocks lookups for the
-    /// others. With one endpoint that is unobservable; slice 4 has several
-    /// entries and needs per-entry state.
-    children: Mutex<HashMap<String, Arc<Child>>>,
+    slots: Slots,
 }
 
 impl Router {
@@ -81,6 +91,7 @@ impl Router {
         catalog: Catalog,
         root: PathBuf,
         server: Server,
+        budget: Budget,
     ) -> Result<Self, Failure> {
         if !address.ip().is_loopback() {
             return Err(Failure::Unavailable(format!(
@@ -92,13 +103,15 @@ impl Router {
         let listener = TcpListener::bind(address)
             .map_err(|error| Failure::Unavailable(format!("cannot bind {address}: {error}")))?;
 
+        let slots = Slots::new(&catalog, budget);
+
         Ok(Self {
             listener,
             shared: Arc::new(Shared {
                 catalog,
                 root,
                 server,
-                children: Mutex::new(HashMap::new()),
+                slots,
             }),
         })
     }
@@ -125,11 +138,7 @@ impl Router {
     /// The next request for an entry starts a fresh child, so this is safe to
     /// call on a router that goes on serving.
     pub fn stop(&self) {
-        self.shared
-            .children
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
+        self.shared.slots.clear();
     }
 
     /// Accepts connections until the process ends.
@@ -150,20 +159,15 @@ impl Router {
 }
 
 impl Shared {
-    /// The child serving this entry, started if this is the first request.
+    /// The child serving this entry, started if there is room for it.
     ///
-    /// The lock is released by returning: the handle is cloned out so the
-    /// relay runs without it.
+    /// # Errors
+    ///
+    /// Returns a [`Failure`] when a child cannot be started, does not become
+    /// ready, or is refused for want of room.
     fn child(&self, entry: &Entry) -> Result<Arc<Child>, Failure> {
-        let mut children = self.children.lock().unwrap_or_else(PoisonError::into_inner);
-
-        if let Some(child) = children.get(&entry.id) {
-            return Ok(Arc::clone(child));
-        }
-
-        let child = Arc::new(self.server.start(entry, &self.root)?);
-        children.insert(entry.id.clone(), Arc::clone(&child));
-        Ok(child)
+        self.slots
+            .child(&self.catalog, entry, &self.server, &self.root)
     }
 
     /// What the catalog carries, for a refusal that can be acted on.

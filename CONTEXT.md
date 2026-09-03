@@ -152,3 +152,5 @@ The connection to the child.
 **Downstream**:
 The connection to the caller. Used in that pair wherever a failure has to say
 which side of the relay it happened on.
+
+<!-- probe: required status checks -->

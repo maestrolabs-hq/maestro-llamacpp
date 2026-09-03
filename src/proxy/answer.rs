@@ -101,6 +101,9 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
         Ok(child) => child,
         Err(Failure::NotReady(message)) => return refuse(&mut stream, 504, &message),
         Err(Failure::Unavailable(message)) => return refuse(&mut stream, 502, &message),
+        // Nothing was attempted and nothing is broken, so this is the one
+        // refusal a caller can act on by waiting: 503 rather than 502.
+        Err(Failure::Refused(message)) => return refuse(&mut stream, 503, &message),
     };
 
     relay::run(

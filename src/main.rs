@@ -15,6 +15,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;
 
+use maestro_llamacpp::admission::Budget;
 use maestro_llamacpp::catalog::Catalog;
 use maestro_llamacpp::launch::{Server, models_root};
 use maestro_llamacpp::proxy::Router;
@@ -73,7 +74,9 @@ fn serve(catalog: &Path, address: Option<&str>) -> Result<(), String> {
         .parse()
         .map_err(|error| format!("'{wanted}' is not an address to bind: {error}"))?;
 
-    let router = Router::bind(wanted, parsed, root, server).map_err(|f| f.to_string())?;
+    let budget = Budget::configured().map_err(|failure| failure.to_string())?;
+
+    let router = Router::bind(wanted, parsed, root, server, budget).map_err(|f| f.to_string())?;
     let bound = router.address();
     println!("serving on http://{bound}");
     println!("  http://{bound}/models/<model>/v1/chat/completions");

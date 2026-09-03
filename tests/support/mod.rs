@@ -240,6 +240,22 @@ impl Serving {
 /// test rather than a failing one.
 #[must_use]
 pub fn serving(catalog: &str, root: ModelsRoot) -> Serving {
+    budgeted(catalog, root, None)
+}
+
+/// The same, under a stated memory budget.
+///
+/// Separate from `serving` so the tests that are not about eviction say
+/// nothing about it, and so the ones that are state their ceiling at the call
+/// rather than through the environment -- which is process-global and would
+/// race every other test in the binary.
+///
+/// # Panics
+///
+/// If the catalog is not usable or the port cannot be bound, which is a broken
+/// test rather than a failing one.
+#[must_use]
+pub fn budgeted(catalog: &str, root: ModelsRoot, limit_mib: Option<u32>) -> Serving {
     let parsed = maestro_llamacpp::catalog::Catalog::parse(catalog).expect("a usable catalog");
     let server = maestro_llamacpp::launch::Server::located(Some(&stub_binary()))
         .expect("the stub binary is built by cargo test");
@@ -248,6 +264,7 @@ pub fn serving(catalog: &str, root: ModelsRoot) -> Serving {
         parsed,
         root.path().to_path_buf(),
         server,
+        maestro_llamacpp::admission::Budget::new(limit_mib),
     )
     .expect("an ephemeral loopback port");
 

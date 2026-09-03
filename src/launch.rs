@@ -55,11 +55,18 @@ pub enum Failure {
     NotReady(String),
     /// A server could not be located, or a child could not be started at all.
     Unavailable(String),
+    /// A child was not started, because there was no room for it.
+    ///
+    /// Distinct from [`Failure::Unavailable`] because nothing was attempted:
+    /// the entry is serviceable and the machine is not broken, so a caller
+    /// that waits for something else to finish may get a different answer.
+    /// That difference is what the status codes carry.
+    Refused(String),
 }
 
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (Self::NotReady(message) | Self::Unavailable(message)) = self;
+        let (Self::NotReady(message) | Self::Unavailable(message) | Self::Refused(message)) = self;
         write!(f, "{message}")
     }
 }

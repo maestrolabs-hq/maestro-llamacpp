@@ -161,11 +161,10 @@ impl Slots {
         {
             Decision::Fits => {}
             Decision::Unload(ids) => {
-                if !self.unload(&ids) {
+                if let Err(blocker) = self.unload(&ids) {
                     return Err(Failure::Refused(format!(
-                        "'{}' needs room held by a model a request reached \
-                         first; nothing else is in the way, so this may \
-                         succeed on a retry",
+                        "'{}' needs room held by '{blocker}', which a request \
+                         reached first; this may succeed on a retry",
                         entry.id
                     )));
                 }
@@ -213,26 +212,32 @@ impl Slots {
             .collect()
     }
 
-    /// Unloads the named entries, and says whether it got all of them.
+    /// Unloads the named entries, or names the one that stopped it.
     ///
     /// Taking the `Loaded` out drops the router's `Arc`, and a child whose
     /// last reference goes is killed by its own `Drop`. Done before the wanted
     /// child is started, which is the point: the room has to be free before
     /// something is put in it.
     ///
-    /// The busy check is made here rather than trusted from [`Slots::held`]
-    /// because it is here that it becomes true or false for good. A signal
-    /// read under one lock acquisition and acted on under another is a signal
-    /// about a moment that has passed: between the two, a request can reach
-    /// the fast path and take a reference. Emptying the slot then would leave
-    /// a process running that nothing accounts for, and the router would go
-    /// over the budget it believes it is keeping.
+    /// Whether each one may still be taken is decided by
+    /// [`take_if_idle`](super::loaded::take_if_idle) at the moment it is
+    /// taken, rather than trusted from the snapshot the decision was made
+    /// against.
     ///
-    /// Returns `false` when a named entry had gained a reader, having unloaded
-    /// whatever it reached first. Those were idle when they were taken, so
+    /// # Errors
+    ///
+    /// Returns the entry that had gained a reader, having unloaded whatever
+    /// it reached before that one. Those were idle when they were taken, so
     /// ending them was allowed; what is lost is the work of starting them
-    /// again, which is the price of not silently overcommitting.
-    fn unload(&self, ids: &[String]) -> bool {
-        ids.iter().all(|id| take_if_idle(self.slot(id)))
+    /// again, which is the price of not silently overcommitting. Naming the
+    /// blocker is what lets the refusal say which model is holding the room,
+    /// rather than only that something is.
+    fn unload<'a>(&self, ids: &'a [String]) -> Result<(), &'a str> {
+        for id in ids {
+            if !take_if_idle(self.slot(id)) {
+                return Err(id);
+            }
+        }
+        Ok(())
     }
 }

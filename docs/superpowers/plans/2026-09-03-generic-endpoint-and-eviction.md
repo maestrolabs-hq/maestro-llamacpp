@@ -299,6 +299,34 @@ reference by locking the slot first, so a thread that holds the lock and sees a
 count of one knows no other thread is about to clone it. Without the lock the
 count would be a guess that goes stale between reading it and acting on it.
 
+That reasoning is a rule the type has to keep, not an observation about today's
+code, so it is stated as an invariant of the slot type. Slice 1 did the same
+for the path type, whose constructor refuses an anchored path; the difference
+is that a path type can enforce its invariant and this one cannot. Nothing in
+the compiler stops a later change from cloning the `Arc` somewhere else, which
+is precisely why the rule has to be written where that change would be made.
+
+The wording below is the invariant. The task that builds the slot type carries
+it into the doc comment verbatim:
+
+```text
+# Invariant
+
+A reference to a loaded child is obtainable only by locking its slot. Every
+path that hands out an `Arc<Child>` -- the fast path, the slow path, and
+`Router::stop` -- clones it while holding this lock and never before. That is
+what makes `Arc::strong_count` a sound busy signal: a thread that holds the
+lock and sees one reference knows no other thread is about to take a second.
+A change that clones the `Arc` by any other route breaks eviction safety
+silently -- a busy child becomes a candidate, and its process is killed under
+a live response.
+```
+
+The failure it describes is silent, which is the reason it earns a stated
+invariant rather than a comment. A child killed under a live response does not
+raise anything: the caller sees a stream that stops early, which is
+indistinguishable from a model that finished.
+
 The consequence is stated rather than hidden: **eviction does not free memory
 immediately if the evicted child is busy** -- which is exactly why a busy child
 is not a candidate. Only idle children are unloaded, and their memory is freed
@@ -890,10 +918,12 @@ The task the previous six were arranged to make small.
   following `stopping_a_router_ends_the_children_it_started`; **a child with a
   stream in flight is not unloaded**, driven by starting a long paced stream on
   the first entry, requesting the second from another thread, and asserting the
-  first stream arrives complete and intact; when the only entry that could be
-  unloaded is busy, the second request is refused `503` and the message names
-  the busy entry; and with no budget configured both entries load regardless of
-  their estimates and nothing is unloaded.
+  first stream arrives complete and intact -- this is the end-to-end half of
+  problem 4's invariant, and the unit test beside the slot type is the other;
+  when the only entry that could be unloaded is busy, the second request is
+  refused `503` and the message names the busy entry; and with no budget
+  configured both entries load regardless of their estimates and nothing is
+  unloaded.
 
 - [ ] Run them and watch them fail.
 
@@ -917,6 +947,21 @@ Record the text.
   lock of its own. Add the admission lock beside it, a `Mutex<()>` whose only
   job is to serialise starts. `Router::stop` clears every slot, dropping every
   `Arc` the router holds, which is what it did before through the map.
+
+  Carry problem 4's invariant into the slot type's doc comment verbatim, under
+  an `# Invariant` heading, matching how `RelativePath` in
+  `src/catalog/path.rs` carries its own. This is the rule the compiler cannot
+  keep, so the type has to say it: a reference to a loaded child is obtainable
+  only by locking its slot.
+
+- [ ] Add the unit test that states the invariant, beside the slot type:
+  `a_slot_reports_busy_while_a_reference_it_handed_out_lives`. Put a `Loaded`
+  into a slot and assert it reads idle; clone the `Arc` the way a relay does
+  and assert the same slot now reads busy; drop the clone and assert it reads
+  idle again. It needs no server and no port -- the point is not that the
+  count works, which is standard-library behaviour, but that a reader who
+  changes how references are handed out finds a test named for the rule they
+  are about to break.
 
 - [ ] Implement the fast path: look up the slot, lock it, and if it holds a
   live child, update `last_used`, clone the `Arc`, release the lock and relay.
@@ -1106,8 +1151,15 @@ kind of thing that differs between platforms.
   check in problem 4 is correct because a relay can only obtain a reference by
   locking the slot first. If a later change hands out a reference by some other
   route, that reasoning silently stops holding and a busy child becomes
-  evictable. The invariant belongs in the module brief, where the next reader
-  will meet it.
+  evictable. This is the one rule in the slice that nothing enforces: the
+  compiler is indifferent, and the end-to-end tests keep passing because a
+  busy child is only killed when the budget happens to be tight. Problem 4
+  states it as an invariant of the slot type, the task that builds that type
+  carries the wording into its doc comment, and
+  `a_slot_reports_busy_while_a_reference_it_handed_out_lives` puts it in front
+  of a reader who is looking at tests rather than at documentation. Three
+  placements for one rule is deliberate: a reader arriving from any of the
+  three directions meets it.
 
 - **A budget is an estimate, and estimates are wrong.** The catalog's numbers
   are what someone typed. A model that costs more than its estimate will be

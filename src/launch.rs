@@ -23,9 +23,11 @@
 //! systems are all implementation and stay inside.
 
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+use std::io::{BufRead, BufReader, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::catalog::Entry;
 
@@ -33,6 +35,12 @@ mod invocation;
 
 /// What the server is called. Located on the search path, never bundled.
 const BINARY_NAME: &str = "llama-server";
+
+/// How often readiness is asked for while a model loads.
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How long one health probe may take before it is treated as no answer.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Why a server could not be located, started, or resolved.
 ///
@@ -72,8 +80,6 @@ pub struct Server {
 }
 
 /// One running server process, serving one entry on one loopback port.
-// As above: constructed by the commit that spawns.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct Child {
     id: String,
@@ -165,11 +171,39 @@ impl Server {
                 ))
             })?;
 
-        Ok(Child {
+        let mut child = Child {
             id: entry.id.clone(),
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
             process,
-        })
+        };
+
+        // Readiness and liveness are different questions and both are asked on
+        // every pass. Liveness first: a child that died while loading is
+        // reported with its status immediately, rather than waiting out a
+        // budget that a dead process can never satisfy.
+        let budget = Duration::from_secs(u64::from(entry.startup_timeout_seconds));
+        let started = Instant::now();
+        loop {
+            if let Liveness::Exited(status) = child.check() {
+                return Err(Failure(format!(
+                    "entry '{}': the server exited while loading ({status})",
+                    child.id
+                )));
+            }
+            if probe(child.address) == Some(200) {
+                return Ok(child);
+            }
+            if started.elapsed() >= budget {
+                // Killed before reporting, so a failed start leaves nothing
+                // behind holding a port.
+                child.stop();
+                return Err(Failure(format!(
+                    "entry '{}': not ready within its startup budget of {} seconds",
+                    child.id, entry.startup_timeout_seconds
+                )));
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
     }
 }
 
@@ -182,13 +216,62 @@ impl Child {
 
     /// Whether the process is still there.
     pub fn check(&mut self) -> Liveness {
-        todo!("liveness arrives with the readiness loop")
+        match self.process.try_wait() {
+            Ok(Some(status)) => Liveness::Exited(status),
+            // A status that cannot be read is reported as still running. The
+            // readiness loop is bounded by the entry's budget rather than by
+            // this answer, so guessing at death here would only turn an
+            // unreadable status into a wrong one.
+            Ok(None) | Err(_) => Liveness::Running,
+        }
     }
 
     /// Stops the child and reaps it, so no zombie is left behind.
+    ///
+    /// Abrupt: `SIGKILL` on the Unix platforms and `TerminateProcess` on
+    /// Windows. Asking politely first needs a platform dependency the standard
+    /// library does not offer, and `llama-server` holds no durable state, so
+    /// an abrupt stop loses only responses in flight -- of which there are
+    /// none until something can make a request.
+    ///
+    /// Killing a child that has already exited fails, and that failure is
+    /// dropped: it means the work this method exists to do is already done.
     pub fn stop(&mut self) {
-        todo!("stopping arrives with the readiness loop")
+        drop(self.process.kill());
+        drop(self.process.wait());
     }
+}
+
+/// A child never outlives the value that represents it.
+///
+/// Without this, a caller that drops a `Child` on an error path leaves a
+/// server holding a port with nothing left in the program that knows about
+/// it. This is the ordinary case and it is avoidable; a hard kill of the
+/// router is not, and stays in the risks.
+impl Drop for Child {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// The status code from `GET /health`, or `None` when nothing answered.
+///
+/// Hand-written over `TcpStream`, and deliberately not the beginning of an
+/// HTTP client. This slice needs one request and one status line. The slice
+/// that proxies needs streamed responses, connection reuse and concurrency,
+/// and should choose a library against those requirements rather than inherit
+/// one picked for a status line.
+fn probe(address: SocketAddr) -> Option<u16> {
+    let mut stream = TcpStream::connect_timeout(&address, PROBE_TIMEOUT).ok()?;
+    stream.set_read_timeout(Some(PROBE_TIMEOUT)).ok()?;
+    stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .ok()?;
+
+    let mut status = String::new();
+    BufReader::new(stream).read_line(&mut status).ok()?;
+    // `HTTP/1.1 200 OK` -- the code, and nothing else from the reply.
+    status.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// The directory catalog locations resolve against.

@@ -277,3 +277,28 @@ fn echo_reflects_the_request_line_and_every_header() {
         "and every header with it:\n{reply}"
     );
 }
+
+#[test]
+fn echo_reports_the_alias_the_stub_was_started_as() {
+    let port = free_port();
+    let _running = start(&["--port", &port.to_string(), "--alias", "gemma3"]);
+    wait_for_listener(port);
+
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("a read timeout");
+    stream
+        .write_all(b"GET /v1/echo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .expect("write");
+    stream.shutdown(Shutdown::Write).expect("shutdown");
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).expect("read");
+
+    // Observed here from the stub directly, so that when a router test asserts
+    // which child answered, a failure means the router rather than the stub.
+    assert!(
+        reply.contains("alias: gemma3"),
+        "the echo says which entry this child is:\n{reply}"
+    );
+}

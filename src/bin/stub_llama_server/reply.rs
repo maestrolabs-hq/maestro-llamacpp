@@ -9,6 +9,9 @@
 //! reflects what arrived -- the last of which no real server serves, and
 //! exists so a test can observe what reached the child rather than trusting
 //! what the router believes it sent.
+//!
+//! The echo also reports the alias the stub was started as. Every child is
+//! the same binary, so without it a test cannot tell which child answered.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -45,7 +48,12 @@ pub struct Pacing {
 ///
 /// Returns whatever the socket returned. Every error here is a client that
 /// hung up, which the caller drops: nothing in this stub is durable.
-pub fn answer(mut stream: TcpStream, ready: bool, pacing: &Pacing) -> std::io::Result<()> {
+pub fn answer(
+    mut stream: TcpStream,
+    ready: bool,
+    pacing: &Pacing,
+    alias: &str,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let head = read_head(&mut reader)?;
 
@@ -68,7 +76,8 @@ pub fn answer(mut stream: TcpStream, ready: bool, pacing: &Pacing) -> std::io::R
         return serve_stream(&mut stream, pacing);
     }
     if path.ends_with("/v1/echo") {
-        return serve_complete(&mut stream, "200 OK", "text/plain", &head.join("\n"));
+        let body = format!("{}\nalias: {alias}", head.join("\n"));
+        return serve_complete(&mut stream, "200 OK", "text/plain", &body);
     }
     serve_complete(
         &mut stream,

@@ -4,13 +4,13 @@ maestro-llamacpp is the estate's model router. It supervises llama.cpp server
 processes and exposes one OpenAI-compatible endpoint per model plus a generic
 routing endpoint.
 
-Status: the fourth slice. The router reads and validates a catalog, takes one
+Status: the fifth slice. The router reads and validates a catalog, takes one
 entry from it as far as a running `llama-server` on a loopback port, and serves
 both a dedicated endpoint per model and a generic endpoint that routes by the
 model a request body names, relaying a streamed reply to the caller as it
 arrives. It holds models within a configured memory budget, unloading an idle
-one to make room for another. Residency arrives with the later slices the
-design names.
+one to make room for another, and holds the resident entries loaded from the
+moment it starts serving.
 
 ## Checking a catalog
 
@@ -102,9 +102,29 @@ Binds the public port and stays up:
 serving on http://127.0.0.1:8080
   http://127.0.0.1:8080/models/<model>/v1/chat/completions
   http://127.0.0.1:8080/v1/chat/completions   (routed by the body's model)
-memory budget: none set, so nothing is ever unloaded (set MAESTRO_MEMORY_BUDGET_MIB)
+memory budget: 25000 MiB, so models are unloaded to make room
+residents reserve 4096 MiB of 25000 MiB, leaving 20904 MiB for everything else
 a streamed reply is passed through as it arrives
+resident qwen3-4b loaded in 1.8 seconds
 ```
+
+The reservation line is there because a resident is memory the router promises
+never to reclaim. A ceiling that covers the residents but not the largest model
+beside them refuses that model permanently, so the budget has to cover the
+resident **plus** the largest entry expected to run next to it -- and an
+operator who learns that from a refusal under load learns it too late.
+
+Residents load on a thread of their own, so the router answers while they load
+rather than going silent until they finish. One that cannot load names itself
+and the reason, and the router serves the rest of the catalog without it:
+
+```text
+resident qwen3-4b: entry 'qwen3-4b': no model file at '/…/Qwen3-4B-Q4_K_M.gguf'
+  serving the rest of the catalog without it
+```
+
+Refusing to start at all would let one missing file deny service to every other
+model, which is worse than the state it would be protecting against.
 
 An address may be given; loopback is enforced, because serving a network is a
 security design this repository has not written.
@@ -183,9 +203,13 @@ pgrep -af llama-server
 A signal handler needs a dependency and a Windows job object, which is a
 change with its own gates to clear rather than a line to add here.
 
-**Three smaller things are known and not addressed.** Recorded so the next
+**Four smaller things are known and not addressed.** Recorded so the next
 slice inherits them rather than discovering them:
 
+- The loading thread keeps the router answering, but only what needs no child.
+  A first request to another entry still waits on the resident's load, bounded
+  by that entry's startup budget. The silence the thread exists to prevent
+  moved from the listener to the first load rather than going away.
 - A decision naming two entries takes them in turn and stops at the first that
   gained a reader, so an operator can lose a warm model *and* still be refused.
   The budget is never overcommitted by this -- the router ends under-loaded

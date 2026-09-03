@@ -230,6 +230,48 @@ impl Serving {
     pub fn address(&self) -> std::net::SocketAddr {
         self.address
     }
+
+    /// Which entries hold a child, without asking any of them for anything.
+    #[must_use]
+    pub fn loaded(&self) -> Vec<String> {
+        self.router.loaded()
+    }
+
+    /// Residents the startup loader could not load.
+    #[must_use]
+    pub fn resident_failures(&self) -> Vec<String> {
+        self.router.resident_failures()
+    }
+}
+
+/// Waits until the router satisfies a condition, or fails saying what it saw.
+///
+/// Residents load on a thread of their own, so a test that asserted the moment
+/// it started serving would be racing the loader rather than testing it.
+///
+/// Nothing here asserts a duration. The deadline is a hang guard, generous
+/// because a loaded continuous-integration machine is slow and because Windows
+/// spawns a child roughly three times slower than Linux; a test that turned
+/// that difference into an assertion would fail on the platform rather than on
+/// the behaviour.
+///
+/// # Panics
+///
+/// If the condition has not arrived by the deadline, reporting what was loaded
+/// and what failed so the failure names a state rather than only a timeout.
+pub fn settled(serving: &Serving, expected: &str, done: impl Fn(&Serving) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        if done(serving) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!(
+        "the router never {expected}; loaded {:?}, resident failures {:?}",
+        serving.loaded(),
+        serving.resident_failures()
+    );
 }
 
 /// Binds a router on an ephemeral port and starts serving it.

@@ -18,7 +18,7 @@ _Avoid_: record, item, definition.
 **Model identifier**:
 The name an entry is addressed by, both in the catalog and in the endpoint
 that serves it. It names a model, never the role a model happens to fill: the
-resident entry is `qwen3-06b` rather than `steward`, because a role name
+resident entry is `qwen3-4b` rather than `steward`, because a role name
 becomes wrong the moment a second caller uses the same model.
 _Avoid_: model name, key, slug.
 

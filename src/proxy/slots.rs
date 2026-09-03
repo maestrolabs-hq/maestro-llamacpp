@@ -1,10 +1,10 @@
 //! Which child is loaded for which entry, and what has to go to make room.
 //!
-//! One type with three methods, holding the part of serving that is about
-//! memory rather than about HTTP. A caller asks for the child that serves an
-//! entry and gets one, or gets told why not; whether that meant finding a
-//! running process, starting one, or ending somebody else's first is this
-//! module's business and nothing else's.
+//! One type, holding the part of serving that is about memory rather than
+//! about HTTP. A caller asks for the child that serves an entry and gets one,
+//! or gets told why not; whether that meant finding a running process,
+//! starting one, or ending somebody else's first is this module's business
+//! and nothing else's.
 //!
 //! The policy itself is not here. `admission` decides what may be loaded from
 //! four values and no machine at all; this acts on that decision, which is the
@@ -15,11 +15,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use crate::admission::{Budget, Decision};
+// Renamed: a slot holds a `Loaded`, and so does a decision. Two of them here
+// under one name is how a reader loses track of which is which.
+use crate::admission::{Budget, Decision, Loaded as Held};
 use crate::catalog::{Catalog, Entry};
-use crate::launch::{Child, Failure, Liveness, Server};
+use crate::launch::{Child, Failure, Server};
 
-use super::loaded::{Loaded, Slot, busy, take_if_idle};
+use super::loaded::{Loaded, Slot, busy, live_child, take_if_idle};
 
 /// Every entry's slot, and the budget they compete for.
 pub(super) struct Slots {
@@ -76,6 +78,11 @@ impl Slots {
         self.admit(catalog, entry, server, root)
     }
 
+    /// The identifiers of the entries holding a child, in catalog order.
+    pub(super) fn loaded_ids(&self, catalog: &Catalog) -> Vec<String> {
+        self.snapshot(catalog, |entry, _| entry.id.clone())
+    }
+
     /// Ends every child, and forgets them.
     pub(super) fn clear(&self) {
         for slot in self.by_id.values() {
@@ -99,29 +106,7 @@ impl Slots {
     /// The fast path, and the common one. No admission lock is taken, so a
     /// request for a loaded model waits on nothing but its own slot.
     fn running(&self, entry: &Entry) -> Option<Arc<Child>> {
-        let mut slot = self
-            .slot(&entry.id)
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let held = slot.as_mut()?;
-
-        // Liveness while the lock is held, so a child that exited since it
-        // last answered is not handed to a relay that will fail on it.
-        //
-        // Only when nothing else holds a reference: `try_wait` needs the
-        // process mutably, and `Arc::get_mut` succeeds exactly when the slot's
-        // handle is the only one. So a child that already has a reader goes
-        // unchecked -- the count proves a reader, not a live process -- and a
-        // dead one is handed on for the relay's own connection to discover.
-        if let Some(child) = Arc::get_mut(&mut held.child)
-            && matches!(child.check(), Liveness::Exited(_))
-        {
-            *slot = None;
-            return None;
-        }
-
-        held.last_used = Instant::now();
-        Some(Arc::clone(&held.child))
+        live_child(self.slot(&entry.id))
     }
 
     /// Starts a child for this entry, unloading what has to go first.
@@ -183,15 +168,20 @@ impl Slots {
         Ok(child)
     }
 
-    /// What is loaded now, as admission needs to see it.
+    /// Every occupied slot, seen through `project`, in catalog order.
     ///
-    /// Each slot is locked in turn rather than all at once, so this is a
-    /// snapshot of several moments rather than a reading of one. The admission
-    /// lock holds it still against other admissions and against nothing else:
-    /// the fast path deliberately takes no admission lock, so an entry read as
-    /// idle here can have a reader before the decision reaches its slot. That
-    /// is why [`Slots::unload`] checks again instead of trusting this.
-    fn held(&self, catalog: &Catalog) -> Vec<crate::admission::Loaded> {
+    /// Each slot is locked in turn, so this is a snapshot of several moments
+    /// rather than a reading of one. The admission lock holds it still against
+    /// other admissions and nothing else: the fast path takes no admission
+    /// lock, so an entry read as idle here can have a reader before the
+    /// decision reaches its slot. That is why [`Slots::unload`] reads the
+    /// signal again at the moment it acts instead of trusting this.
+    ///
+    /// `project` is handed a borrow and never an owned handle, which keeps
+    /// every caller clear of the slot invariant in [`super::loaded`] -- a rule
+    /// about where an `Arc` is cloned, which warns by name against listing
+    /// what is loaded by handing out references.
+    fn snapshot<T>(&self, catalog: &Catalog, project: impl Fn(&Entry, &Loaded) -> T) -> Vec<T> {
         catalog
             .entries
             .iter()
@@ -201,15 +191,16 @@ impl Slots {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
                 let held = slot.as_ref()?;
-                Some(crate::admission::Loaded {
-                    id: entry.id.clone(),
-                    memory_estimate_mib: entry.memory_estimate_mib,
-                    residency: entry.residency,
-                    busy: busy(&held.child),
-                    last_used: held.last_used,
-                })
+                Some(project(entry, held))
             })
             .collect()
+    }
+
+    /// What is loaded now, as admission needs to see it.
+    fn held(&self, catalog: &Catalog) -> Vec<Held> {
+        self.snapshot(catalog, |entry, held| {
+            Held::of(entry, busy(&held.child), held.last_used)
+        })
     }
 
     /// Unloads the named entries, or names the one that stopped it.
@@ -219,10 +210,8 @@ impl Slots {
     /// child is started, which is the point: the room has to be free before
     /// something is put in it.
     ///
-    /// Whether each one may still be taken is decided by
-    /// [`take_if_idle`](super::loaded::take_if_idle) at the moment it is
-    /// taken, rather than trusted from the snapshot the decision was made
-    /// against.
+    /// Each is taken by [`take_if_idle`](super::loaded::take_if_idle), which
+    /// re-reads the busy signal for the reason [`Slots::snapshot`] records.
     ///
     /// # Errors
     ///

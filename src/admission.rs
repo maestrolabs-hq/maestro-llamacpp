@@ -28,7 +28,7 @@
 
 use std::time::Instant;
 
-use crate::catalog::Residency;
+use crate::catalog::{Entry, Residency};
 use crate::launch::Failure;
 
 /// Where the memory budget is configured. The estate prefix keeps it
@@ -54,6 +54,26 @@ pub struct Loaded {
     pub busy: bool,
     /// When it last answered, so the coldest is unloaded first.
     pub last_used: Instant,
+}
+
+impl Loaded {
+    /// What admission needs to know about one entry that is loaded.
+    ///
+    /// Built here rather than at the call site because these fields are this
+    /// module's own. A caller that names all five is a caller that has to be
+    /// edited every time the policy needs one more, and the two facts it
+    /// actually holds -- whether something is reading, and when it last
+    /// answered -- are the only two it is asked for.
+    #[must_use]
+    pub fn of(entry: &Entry, busy: bool, last_used: Instant) -> Self {
+        Self {
+            id: entry.id.clone(),
+            memory_estimate_mib: entry.memory_estimate_mib,
+            residency: entry.residency,
+            busy,
+            last_used,
+        }
+    }
 }
 
 /// What admission decided.

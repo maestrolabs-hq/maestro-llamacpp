@@ -74,7 +74,7 @@ fn forward_body(
     reader: &mut BufReader<TcpStream>,
     upstream: &mut TcpStream,
 ) -> std::io::Result<()> {
-    let mut remaining = head.content_length;
+    let mut remaining = head.body_bytes();
     let mut buffer = [0u8; BUFFER];
     while remaining > 0 {
         let want = remaining.min(BUFFER);

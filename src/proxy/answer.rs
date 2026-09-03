@@ -12,6 +12,7 @@ use std::io::{BufReader, Write};
 use std::net::TcpStream;
 
 use super::endpoint::Endpoint;
+use super::head::Length;
 use super::{Shared, body, head, relay};
 use crate::launch::Failure;
 
@@ -37,7 +38,8 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
         // refusal is declining to read.
         let about = match &request.endpoint {
             Endpoint::Dedicated { id, .. } => format!("entry '{id}'"),
-            Endpoint::Generic { .. } | Endpoint::Listing => "the generic endpoint".to_owned(),
+            Endpoint::Generic { .. } => "the generic endpoint".to_owned(),
+            Endpoint::Listing => "the model listing".to_owned(),
         };
         return refuse(
             &mut stream,
@@ -45,6 +47,23 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
             &format!(
                 "{about}: this router does not implement chunked request \
                  bodies; send a body with a Content-Length"
+            ),
+        );
+    }
+
+    // Framing still, and for the same reason: a length this router cannot read
+    // is a request it cannot honour whatever it names. Defaulting it to zero
+    // was worse than refusing -- the dedicated endpoint would forward the
+    // header as received and leave the child waiting for a body nobody was
+    // going to send, and the generic one would refuse the empty result for not
+    // being JSON, which names the wrong thing entirely.
+    if let Length::Malformed(value) = &request.length {
+        return refuse(
+            &mut stream,
+            400,
+            &format!(
+                "'Content-Length: {value}' is not a length this router can \
+                 read; send a byte count, or no such header at all"
             ),
         );
     }
@@ -62,24 +81,39 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
         Endpoint::Dedicated { id, .. } => (id.clone(), None),
         Endpoint::Listing => unreachable!("answered above"),
         Endpoint::Generic { .. } => {
+            // This endpoint has nothing else to route on, so a request with no
+            // declared body is one it can never answer. Said as the missing
+            // header rather than as a parser complaining about an empty slice,
+            // which is what a caller sending `GET /v1/models/gemma3` would
+            // otherwise be told.
+            let Length::Given(declared) = request.length else {
+                return refuse(
+                    &mut stream,
+                    411,
+                    "the generic endpoint routes on the 'model' field of the \
+                     request body, so it needs one and a Content-Length that \
+                     declares it; or address a model directly at \
+                     /models/<model>/<path>",
+                );
+            };
+
             // The one place this bound is enforced, and the only place it can
             // be: `body::read` allocates what it is told to and has no status
             // left to refuse with. Checked before reading rather than after,
             // because taking the memory and then objecting to it is the bug
             // the bound exists to prevent.
-            if request.content_length > body::MAX_BODY_BYTES {
+            if declared > body::MAX_BODY_BYTES {
                 return refuse(
                     &mut stream,
                     413,
                     &format!(
-                        "a request body of {} bytes is larger than the {} this \
-                         router will read",
-                        request.content_length,
+                        "a request body of {declared} bytes is larger than the \
+                         {} this router will read",
                         body::MAX_BODY_BYTES
                     ),
                 );
             }
-            match body::read(&mut reader, request.content_length) {
+            match body::read(&mut reader, declared) {
                 Ok((bytes, model)) => (model, Some(bytes)),
                 Err(failure) => return refuse(&mut stream, 400, &failure.to_string()),
             }
@@ -142,13 +176,14 @@ fn list(stream: &mut TcpStream, shared: &Shared) -> std::io::Result<()> {
 
 /// The router's own answer, as a complete reply with a declared length.
 ///
-/// Distinct from anything relayed: these are the four refusals that happen
-/// before a single byte of a child's response has been forwarded, which is
-/// what makes a status still possible.
+/// Distinct from anything relayed: these are the refusals that happen before a
+/// single byte of a child's response has been forwarded, which is what makes a
+/// status still possible.
 fn refuse(stream: &mut TcpStream, status: u16, message: &str) -> std::io::Result<()> {
     let reason = match status {
         400 => "Bad Request",
         404 => "Not Found",
+        411 => "Length Required",
         413 => "Content Too Large",
         501 => "Not Implemented",
         502 => "Bad Gateway",

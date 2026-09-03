@@ -132,6 +132,55 @@ fn a_body_naming_no_model_at_all_is_a_bad_request() {
 }
 
 #[test]
+fn a_generic_request_with_no_declared_body_is_told_what_is_missing() {
+    let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
+
+    // What an OpenAI-compatible client sends to retrieve one model. It is not
+    // the listing -- that is `/v1/models` exactly -- so it arrives here as a
+    // generic request with nothing to route on.
+    let reply = request(serving.address(), &get("/v1/models/gemma3"));
+
+    assert_eq!(
+        status(&reply),
+        Some(411),
+        "the missing thing is a declared body, and saying so is not the same \
+         as a parser complaining about an empty one:\n{reply}"
+    );
+    assert!(
+        reply.contains("Content-Length") && reply.contains("/models/"),
+        "the refusal names the header it wanted and the endpoint that needs \
+         no body at all:\n{reply}"
+    );
+}
+
+#[test]
+fn a_length_the_router_cannot_read_is_refused_rather_than_treated_as_none() {
+    let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
+
+    // Defaulting this to zero would forward the header as received and leave
+    // the child waiting for a body nobody is going to send.
+    let reply = request(
+        serving.address(),
+        "POST /models/gemma3/v1/echo HTTP/1.1\r\n\
+         Host: router\r\n\
+         Content-Length: abc\r\n\
+         Connection: close\r\n\
+         \r\n",
+    );
+
+    assert_eq!(
+        status(&reply),
+        Some(400),
+        "a length that will not parse is refused where a status is still \
+         possible:\n{reply}"
+    );
+    assert!(
+        reply.contains("abc"),
+        "quoting back what arrived, so the reader sees what the router saw:\n{reply}"
+    );
+}
+
+#[test]
 fn a_body_larger_than_the_router_will_read_is_refused_before_it_is_read() {
     let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
 

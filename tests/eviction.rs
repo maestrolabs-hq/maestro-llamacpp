@@ -155,26 +155,29 @@ fn no_budget_at_all_loads_everything_and_unloads_nothing() {
     );
 }
 
-/// Opens a stream and returns the connection with the reply still arriving.
+/// Opens a stream and returns the connection with the reply still arriving,
+/// alongside what arrived first.
 ///
 /// Returned rather than read here, because the point of every case that uses
-/// this is what happens to the stream while something else is going on.
-fn start_stream(address: std::net::SocketAddr, path: &str) -> TcpStream {
+/// this is what happens to the stream while something else is going on. The
+/// first read is waited on rather than assumed: the child has to be started
+/// and the reply has to have begun before this counts as in flight, or the
+/// caller races the very thing it is asserting about.
+///
+/// What that first reply *is* differs by case, so it is handed back rather
+/// than judged here. One case needs a stream that began; another is content
+/// with a refusal, the room having genuinely gone.
+fn start_stream(address: std::net::SocketAddr, path: &str, body: &str) -> (TcpStream, String) {
     let mut stream = TcpStream::connect(address).expect("the router is listening");
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .expect("a read timeout, so a hang fails rather than blocking the suite");
-    stream
-        .write_all(post(path, "{\"model\":\"gemma3\",\"stream\":true}").as_bytes())
-        .expect("write");
+    stream.write_all(post(path, body).as_bytes()).expect("write");
 
-    // Waited on rather than assumed: the child has to be started and the
-    // first event has to have arrived before this counts as in flight, or the
-    // test races the very thing it is asserting about.
     let mut first = [0u8; 512];
-    let read = stream.read(&mut first).expect("the stream begins");
-    assert!(read > 0, "the stream begins before anything else happens");
-    stream
+    let read = stream.read(&mut first).expect("the router answers");
+    assert!(read > 0, "something came back before anything else happened");
+    (stream, String::from_utf8_lossy(&first[..read]).into_owned())
 }
 
 #[test]
@@ -199,7 +202,16 @@ fn a_child_with_a_stream_in_flight_is_not_unloaded() {
         Some(4096),
     );
 
-    let mut streaming = start_stream(serving.address(), "/v1/chat/completions");
+    let (mut streaming, opening) = start_stream(
+        serving.address(),
+        "/v1/chat/completions",
+        "{\"model\":\"gemma3\",\"stream\":true}",
+    );
+    assert_eq!(
+        status(&opening),
+        Some(200),
+        "the stream is in flight before anything else happens:\n{opening}"
+    );
 
     // Asked for while the stream above is still arriving. Whatever this
     // answers, it must not have been served by killing the process that is
@@ -215,7 +227,7 @@ fn a_child_with_a_stream_in_flight_is_not_unloaded() {
         "the refusal names what is holding the memory:\n{second}"
     );
 
-    let mut rest = String::new();
+    let mut rest = opening;
     drop(streaming.read_to_string(&mut rest));
     assert!(
         rest.contains("data: {\"n\":11}"),
@@ -260,27 +272,6 @@ fn three_entries() -> String {
     )
 }
 
-/// Opens a stream to a named entry and returns it with the reply arriving.
-///
-/// Unlike `start_stream`, the path names the model, so nothing depends on what
-/// the body says. A refusal is a legitimate outcome here -- the room may
-/// genuinely have gone -- so this waits for bytes rather than for an event.
-fn start_dedicated_stream(address: std::net::SocketAddr, id: &str) -> TcpStream {
-    let mut stream = TcpStream::connect(address).expect("the router is listening");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .expect("a read timeout, so a hang fails rather than blocking the suite");
-    let path = format!("/models/{id}/v1/chat/completions");
-    stream
-        .write_all(post(&path, "{\"stream\":true}").as_bytes())
-        .expect("write");
-
-    let mut first = [0u8; 512];
-    let read = stream.read(&mut first).expect("something comes back");
-    assert!(read > 0, "the router answered one way or the other");
-    stream
-}
-
 #[test]
 fn a_child_that_becomes_busy_during_a_decision_is_not_taken_from_its_slot() {
     // The interleaving this drives: a decision reads every slot, finds qwen38
@@ -318,9 +309,17 @@ fn a_child_that_becomes_busy_during_a_decision_is_not_taken_from_its_slot() {
         assert_eq!(status(&second), Some(200), "qwen38 is loaded:\n{second}");
         let warm = child_endpoint(&second);
 
+        // The path names the model, so this depends on nothing the body says.
+        // A refusal is a legitimate answer here -- the room may genuinely have
+        // gone -- and the assertion below holds either way.
         let reader = std::thread::spawn(move || {
             sleep(Duration::from_micros(micros));
-            start_dedicated_stream(address, "qwen38")
+            start_stream(
+                address,
+                "/models/qwen38/v1/chat/completions",
+                "{\"stream\":true}",
+            )
+            .0
         });
 
         // 9000 against a budget of 9000 already holding 6000: both of the

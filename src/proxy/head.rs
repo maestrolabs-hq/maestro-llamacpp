@@ -25,6 +25,25 @@ pub(super) const MAX_HEAD_BYTES: usize = 64 * 1024;
 /// How many header lines the router will accept.
 pub(super) const MAX_HEADERS: usize = 100;
 
+/// What a request said about the length of its body.
+///
+/// Three states rather than a number, because they are three different
+/// requests and a router that folded them into one would answer two of them
+/// wrongly. Saying nothing is a request with no body. Saying something
+/// unreadable is a request this router cannot honour -- forwarding it would
+/// hand the child a declared length with nothing behind it, and defaulting it
+/// to zero would refuse the request later for something else entirely.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Length {
+    /// No `Content-Length` header at all.
+    Absent,
+    /// A length this router can act on.
+    Given(usize),
+    /// A header that will not parse, kept as received so a refusal can quote
+    /// back what arrived.
+    Malformed(String),
+}
+
 /// A parsed request head.
 ///
 /// The endpoint is resolved at parse time because every caller wants it: it
@@ -37,8 +56,8 @@ pub(super) struct Head {
     pub(super) endpoint: Endpoint,
     /// Every header as received, in order.
     pub(super) headers: Vec<(String, String)>,
-    /// The declared body length, or zero when there is none.
-    pub(super) content_length: usize,
+    /// What the request said about its body's length.
+    pub(super) length: Length,
     /// Whether the request announced chunked framing, which this router
     /// refuses rather than guesses at.
     pub(super) chunked: bool,
@@ -111,7 +130,7 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
     let endpoint = Endpoint::of(path)?;
 
     let mut headers = Vec::new();
-    let mut content_length = 0;
+    let mut length = Length::Absent;
     let mut chunked = false;
     for line in lines.iter().skip(1) {
         // A line with no colon is not a header. Skipped rather than refused:
@@ -122,7 +141,13 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
         };
         let (name, value) = (name.trim(), value.trim());
         if name.eq_ignore_ascii_case("content-length") {
-            content_length = value.parse().unwrap_or(0);
+            // Kept rather than defaulted. A length that will not parse is a
+            // fact about the request, and the one caller that can still send a
+            // status is the one that should decide what to do about it.
+            length = value.parse().map_or_else(
+                |_| Length::Malformed(value.to_owned()),
+                Length::Given,
+            );
         }
         if name.eq_ignore_ascii_case("transfer-encoding")
             && value.to_ascii_lowercase().contains("chunked")
@@ -136,7 +161,7 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
         method,
         endpoint,
         headers,
-        content_length,
+        length,
         chunked,
     })
 }
@@ -147,6 +172,17 @@ fn malformed(reason: &str) -> Failure {
 }
 
 impl Head {
+    /// How many bytes of body to copy, which is none unless one was declared.
+    ///
+    /// A malformed length never reaches here: it is refused where a status is
+    /// still possible, which is before anything is forwarded.
+    pub(super) fn body_bytes(&self) -> usize {
+        match self.length {
+            Length::Given(bytes) => bytes,
+            Length::Absent | Length::Malformed(_) => 0,
+        }
+    }
+
     /// The head to send upstream: the same method, the suffix as the path,
     /// pointed at the child and asked to close when done.
     ///
@@ -240,14 +276,38 @@ mod tests {
         .expect("a well-formed head");
 
         assert_eq!(
-            head.content_length, 42,
+            head.length,
+            Length::Given(42),
             "a client is entitled to send a lowercase header name"
         );
     }
 
     #[test]
-    fn a_head_without_a_length_carries_no_body() {
-        assert_eq!(head_of("/models/gemma3/v1/echo").content_length, 0);
+    fn a_head_without_a_length_says_so_rather_than_declaring_nothing() {
+        assert_eq!(
+            head_of("/models/gemma3/v1/echo").length,
+            Length::Absent,
+            "absent and zero are different requests, and only one of them is \
+             a caller that forgot a header"
+        );
+    }
+
+    #[test]
+    fn a_length_that_will_not_parse_is_kept_rather_than_defaulted() {
+        for value in ["abc", "-1", ""] {
+            let head = parse(&lines(&[
+                "POST /v1/chat/completions HTTP/1.1",
+                &format!("Content-Length: {value}"),
+            ]))
+            .expect("a head the router can still refuse deliberately");
+
+            assert_eq!(
+                head.length,
+                Length::Malformed(value.to_owned()),
+                "defaulting this to zero would forward a head declaring a body \
+                 with nothing behind it, and blame whatever failed next"
+            );
+        }
     }
 
     #[test]

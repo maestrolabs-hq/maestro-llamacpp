@@ -5,10 +5,14 @@
 //! -- the test target, which has to construct a catalog, assert on its fields,
 //! and drive a real child process through its lifetime.
 //!
-//! Four modules, and no more than the tests and the binary between them ask
+//! Five modules, and no more than the tests and the binary between them ask
 //! for: a wider surface would be a promise to callers who do not exist.
+//! `startup` is here on exactly that bar -- the binary prints those lines and
+//! the tests read them, and a line composed inside a binary is one no test
+//! can reach.
 
 pub mod admission;
 pub mod catalog;
 pub mod launch;
 pub mod proxy;
+pub mod startup;

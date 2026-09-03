@@ -128,6 +128,24 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    /// What the entries held loaded reserve, in mebibytes.
+    ///
+    /// A catalog fact rather than a machine one: it is the sum of what the
+    /// resident entries say they cost, with no ceiling anywhere near it. What
+    /// that sum means for a particular machine is the budget's business.
+    ///
+    /// Widened to sum, because estimates that each fit in a `u32` need not sum
+    /// into one, and an overflow here would report a reservation of almost
+    /// nothing.
+    #[must_use]
+    pub fn resident_reservation_mib(&self) -> u64 {
+        self.entries
+            .iter()
+            .filter(|entry| entry.residency == Residency::Resident)
+            .map(|entry| u64::from(entry.memory_estimate_mib))
+            .sum()
+    }
+
     /// Reads a catalog, reporting everything wrong with it.
     ///
     /// # Errors

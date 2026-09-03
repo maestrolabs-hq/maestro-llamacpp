@@ -22,6 +22,17 @@ fn golden() -> Catalog {
 }
 
 #[test]
+fn the_resident_reservation_is_what_the_resident_entries_cost() {
+    assert_eq!(
+        golden().resident_reservation_mib(),
+        1024,
+        "one resident at 1024 MiB. An on-demand entry costs nothing here \
+         however large it is, because a reservation is what stays held \
+         whatever else the router does"
+    );
+}
+
+#[test]
 fn the_golden_catalog_parses_field_by_field() {
     let catalog = golden();
     assert_eq!(catalog.version, 1);

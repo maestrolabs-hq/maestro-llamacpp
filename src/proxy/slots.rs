@@ -152,7 +152,16 @@ impl Slots {
             .admit(&self.held(catalog), &entry.id, entry.memory_estimate_mib)
         {
             Decision::Fits => {}
-            Decision::Unload(ids) => self.unload(&ids),
+            Decision::Unload(ids) => {
+                if !self.unload(&ids) {
+                    return Err(Failure::Refused(format!(
+                        "'{}' needs room held by a model a request reached \
+                         first; nothing else is in the way, so this may \
+                         succeed on a retry",
+                        entry.id
+                    )));
+                }
+            }
             Decision::Refuse(message) => return Err(Failure::Refused(message)),
         }
 
@@ -169,9 +178,12 @@ impl Slots {
 
     /// What is loaded now, as admission needs to see it.
     ///
-    /// Each slot is locked in turn rather than all at once: this reads a
-    /// snapshot, and the admission lock is what keeps that snapshot true for
-    /// as long as the decision takes.
+    /// Each slot is locked in turn rather than all at once, so this is a
+    /// snapshot of several moments rather than a reading of one. The admission
+    /// lock holds it still against other admissions and against nothing else:
+    /// the fast path deliberately takes no admission lock, so an entry read as
+    /// idle here can have a reader before the decision reaches its slot. That
+    /// is why [`Slots::unload`] checks again instead of trusting this.
     fn held(&self, catalog: &Catalog) -> Vec<crate::admission::Loaded> {
         catalog
             .entries
@@ -193,19 +205,37 @@ impl Slots {
             .collect()
     }
 
-    /// Unloads the named entries, ending their processes before the next one
-    /// starts.
+    /// Unloads the named entries, and says whether it got all of them.
     ///
     /// Taking the `Loaded` out drops the router's `Arc`, and a child whose
     /// last reference goes is killed by its own `Drop`. Done before the wanted
     /// child is started, which is the point: the room has to be free before
     /// something is put in it.
-    fn unload(&self, ids: &[String]) {
-        for id in ids {
-            self.slot(id)
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
-        }
+    ///
+    /// The busy check is made here rather than trusted from [`Slots::held`]
+    /// because it is here that it becomes true or false for good. A signal
+    /// read under one lock acquisition and acted on under another is a signal
+    /// about a moment that has passed: between the two, a request can reach
+    /// the fast path and take a reference. Emptying the slot then would leave
+    /// a process running that nothing accounts for, and the router would go
+    /// over the budget it believes it is keeping.
+    ///
+    /// Returns `false` when a named entry had gained a reader, having unloaded
+    /// whatever it reached first. Those were idle when they were taken, so
+    /// ending them was allowed; what is lost is the work of starting them
+    /// again, which is the price of not silently overcommitting.
+    fn unload(&self, ids: &[String]) -> bool {
+        ids.iter().all(|id| {
+            let mut slot = self.slot(id).lock().unwrap_or_else(PoisonError::into_inner);
+            match slot.as_ref() {
+                // Somebody started reading after the snapshot was taken, so
+                // this room is not the decision's to give away.
+                Some(held) if busy(&held.child) => false,
+                _ => {
+                    slot.take();
+                    true
+                }
+            }
+        })
     }
 }

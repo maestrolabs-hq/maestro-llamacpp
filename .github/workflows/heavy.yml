@@ -4,7 +4,7 @@ name: Heavy
 
 on:
   schedule:
-    - cron: "0 6 * * 1"   # Monday 06:00 UTC, clear of the fleet audit at 07:00
+    - cron: "0 6 * * 1" # Monday 06:00 UTC, clear of the fleet audit at 07:00
   workflow_dispatch:
 
 permissions:
@@ -30,3 +30,25 @@ jobs:
     uses: maestrolabs-hq/.github/.github/workflows/rust-heavy.yml@main
     with:
       msrv: "1.85"
+
+  # The full eight-point eviction stagger sweep. Gated out of the fast tier
+  # because on Windows, where a process spawn is ~370ms, the eight iterations
+  # cost about ten minutes; every pull request runs a two-point smoke of the
+  # same test. MAESTRO_EVICTION_FULL_SWEEP set here restores all eight, so the
+  # slot-invariant race is exercised across enough timings to land on any
+  # machine. Repo-local on purpose: only this repository has the test, so the
+  # variable belongs in this repository's own tier, not the shared workflow.
+  eviction-sweep:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      MAESTRO_EVICTION_FULL_SWEEP: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo test --test eviction

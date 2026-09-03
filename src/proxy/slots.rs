@@ -147,6 +147,14 @@ impl Slots {
             return Ok(child);
         }
 
+        // Before the decision, because the decision ends processes and this
+        // does not. A stale path, an unmounted root or a half-finished
+        // download would otherwise unload the operator's warm model and then
+        // answer 502, leaving them with neither. What cannot be prevented here
+        // is a start that fails later -- a timeout, or a model that costs more
+        // than its estimate -- because those are only knowable by trying.
+        Server::model_file(entry, root)?;
+
         match self
             .budget
             .admit(&self.held(catalog), &entry.id, entry.memory_estimate_mib)

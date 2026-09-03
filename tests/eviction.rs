@@ -237,6 +237,37 @@ fn a_child_with_a_stream_in_flight_is_not_unloaded() {
     );
 }
 
+#[test]
+fn a_request_for_a_model_that_is_not_there_unloads_nothing() {
+    // 3000 and 3000 against 4096, as the eviction case -- but the second
+    // entry's file is missing from the root, so the start that eviction would
+    // be making room for cannot succeed whatever is unloaded.
+    let serving = budgeted(
+        &two_entries(3000, 3000),
+        ModelsRoot::with(&[MODEL]),
+        Some(4096),
+    );
+
+    let first = request(serving.address(), &get("/models/gemma3/v1/echo"));
+    assert_eq!(status(&first), Some(200), "the first answers:\n{first}");
+    let warm = child_endpoint(&first);
+
+    let second = request(serving.address(), &get("/models/qwen38/v1/echo"));
+    assert_eq!(
+        status(&second),
+        Some(502),
+        "the entry names a file the root does not carry:\n{second}"
+    );
+
+    assert_eq!(
+        health(warm.as_str()),
+        Some(200),
+        "and the warm model is untouched. Ending it would have bought nothing: \
+         the room was for a start that could never have happened, and the \
+         operator would be left with neither model"
+    );
+}
+
 /// Three entries whose estimates make one request unload the other two.
 ///
 /// Two is the point. Unloading the first ends a process, and ending a process

@@ -18,7 +18,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 mod support;
-use support::{MODEL, ModelsRoot, arrivals, catalog_text, post, serving};
+use support::{MODEL, ModelsRoot, arrivals, catalog_text, get, post, request, serving, status};
 
 /// The completion path, which the stub answers with a paced stream.
 const COMPLETIONS: &str = "/models/gemma3/v1/chat/completions";
@@ -47,6 +47,24 @@ fn production() -> Duration {
 #[test]
 fn a_paced_stream_reaches_the_caller_as_it_arrives() {
     let serving = serving(&paced(""), ModelsRoot::with(&[MODEL]));
+
+    // The timed request must find a ready child, and this is what makes it
+    // one. A child starts on the first request for its entry, so timing that
+    // request would measure process spawn and a health poll as well as the
+    // relay: about 100ms of it on Linux and 370ms on Windows, which is enough
+    // to push the first arrival past a threshold the relay had nothing to do
+    // with. It is asserted rather than merely sent, because a warm-up that
+    // silently failed would put the startup cost back into the measurement
+    // with nobody the wiser.
+    //
+    // Do not remove this as redundant. Without it the assertion below measures
+    // the operating system rather than the property this test is named for.
+    let warmed = request(serving.address(), &get("/models/gemma3/v1/echo"));
+    assert_eq!(
+        status(&warmed),
+        Some(200),
+        "the child is ready before anything is timed:\n{warmed}"
+    );
 
     let (body, times) = arrivals(serving.address(), &post(COMPLETIONS, BODY));
 

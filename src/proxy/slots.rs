@@ -19,7 +19,7 @@ use crate::admission::{Budget, Decision};
 use crate::catalog::{Catalog, Entry};
 use crate::launch::{Child, Failure, Liveness, Server};
 
-use super::loaded::{Loaded, Slot, busy};
+use super::loaded::{Loaded, Slot, busy, take_if_idle};
 
 /// Every entry's slot, and the budget they compete for.
 pub(super) struct Slots {
@@ -233,17 +233,6 @@ impl Slots {
     /// ending them was allowed; what is lost is the work of starting them
     /// again, which is the price of not silently overcommitting.
     fn unload(&self, ids: &[String]) -> bool {
-        ids.iter().all(|id| {
-            let mut slot = self.slot(id).lock().unwrap_or_else(PoisonError::into_inner);
-            match slot.as_ref() {
-                // Somebody started reading after the snapshot was taken, so
-                // this room is not the decision's to give away.
-                Some(held) if busy(&held.child) => false,
-                _ => {
-                    slot.take();
-                    true
-                }
-            }
-        })
+        ids.iter().all(|id| take_if_idle(self.slot(id)))
     }
 }

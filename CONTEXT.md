@@ -87,3 +87,29 @@ Whether a child has finished loading and will answer. Distinct from liveness.
 **Liveness**:
 Whether a child process still exists. A child can be alive and not ready for
 several minutes.
+
+**Public port**:
+The one port the router listens on, where callers reach it. Distinct from the
+loopback ports children bind, which no caller sees.
+
+**Dedicated endpoint**:
+The path shape that names a model, so a request needs no model field to be
+routed.
+_Avoid_: route, handler.
+
+**Request head**:
+The request line and the headers, ending at the first blank line. The only part
+of a request the router reads.
+
+**Relay**:
+Copying bytes between the caller's connection and the child's, in both
+directions, without interpreting them. Named because it is the decision rather
+than the mechanism: what the router does not parse, it cannot buffer.
+_Avoid_: pipe, forward, tunnel.
+
+**Upstream**:
+The connection to the child.
+
+**Downstream**:
+The connection to the caller. Used in that pair wherever a failure has to say
+which side of the relay it happened on.

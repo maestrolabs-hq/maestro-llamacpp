@@ -1,0 +1,90 @@
+# The models this router serves.
+#
+# Every location is relative to a models root supplied at run time, so this
+# file describes a set of models without naming the machine they sit on.
+#
+# The flags tables carry llama-server settings verbatim. This router does not
+# interpret them, which is what keeps a change to that server's flag surface
+# an edit here rather than a change to the code.
+#
+# The memory estimates are estimates. Nothing reads them until eviction
+# arrives, and measuring them belongs with the slice that has to make a
+# decision from them.
+
+version = 1
+
+# Settings every entry shares. An entry inherits what it does not set, and
+# overrides it by saying so.
+[defaults]
+context_size = 32768
+residency = "on-demand"
+memory_estimate_mib = 4096
+
+[defaults.flags]
+jinja = "true"
+n-gpu-layers = "999"
+fit = "on"
+fit-target = "1536"
+stop-timeout = "30"
+
+# The general-purpose model, with a speculative draft and a vision projector.
+[models.qwen38]
+path = "llm/qwen/qwen3.8-27b/Qwen3.8-27B-UD-Q6_K.gguf"
+draft_path = "llm/qwen/qwen3.8-27b/MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
+projector_path = "llm/qwen/qwen3.8-27b/mmproj-F16.gguf"
+context_size = 131072
+memory_estimate_mib = 24576
+reasoning_format = "deepseek"
+
+[models.qwen38.flags]
+ctk = "q8_0"
+ctv = "q8_0"
+fa = "on"
+np = "1"
+kv-unified = "true"
+n-gpu-layers-draft = "999"
+spec-type = "draft-mtp"
+spec-draft-n-max = "3"
+
+# The same weights at a lower reasoning effort, for extraction work where the
+# thinking costs more than it returns.
+[models.qwen38-semantic]
+path = "llm/qwen/qwen3.8-27b/Qwen3.8-27B-UD-Q6_K.gguf"
+draft_path = "llm/qwen/qwen3.8-27b/MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
+projector_path = "llm/qwen/qwen3.8-27b/mmproj-F16.gguf"
+context_size = 131072
+memory_estimate_mib = 24576
+reasoning_format = "deepseek"
+reasoning_effort = "low"
+
+[models.qwen38-semantic.flags]
+ctk = "q8_0"
+ctv = "q8_0"
+fa = "on"
+np = "1"
+kv-unified = "true"
+n-gpu-layers-draft = "999"
+spec-type = "draft-mtp"
+spec-draft-n-max = "3"
+
+# A small model kept for cheap work that does not deserve the large one.
+[models.gemma3]
+path = "cache/llama.cpp/gemma-3-1b-it/gemma-3-1b-it-Q4_K_M.gguf"
+memory_estimate_mib = 2048
+
+[models.gemma3.flags]
+fa = "on"
+np = "1"
+kv-unified = "true"
+
+# The resident entry. Held loaded so a caller that asks constantly never waits
+# for a load, which is the whole reason residency exists.
+[models.qwen3-06b]
+path = "llm/qwen/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf"
+residency = "resident"
+memory_estimate_mib = 1024
+
+[models.qwen3-06b.flags]
+fa = "on"
+np = "1"
+kv-unified = "true"

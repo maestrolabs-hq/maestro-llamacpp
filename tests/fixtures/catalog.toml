@@ -1,0 +1,47 @@
+# Golden fixture: the four entries the design specification names, in the
+# shape the parser must accept. Every path here is relative, so this file
+# cannot name one machine and the resolution against a models root stays the
+# caller's decision.
+
+version = 1
+
+# Settings every entry shares. An entry inherits what it does not set.
+[defaults]
+context_size = 32768
+residency = "on-demand"
+memory_estimate_mib = 4096
+
+[defaults.flags]
+jinja = "true"
+n-gpu-layers = "999"
+
+[models.qwen38]
+path = "llm/qwen/qwen3.8-27b/Qwen3.8-27B-UD-Q6_K.gguf"
+draft_path = "llm/qwen/qwen3.8-27b/MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
+projector_path = "llm/qwen/qwen3.8-27b/mmproj-F16.gguf"
+context_size = 131072
+memory_estimate_mib = 24576
+reasoning_format = "deepseek"
+
+[models.qwen38.flags]
+ctk = "q8_0"
+ctv = "q8_0"
+fa = "on"
+
+[models.qwen38-semantic]
+path = "llm/qwen/qwen3.8-27b/Qwen3.8-27B-UD-Q6_K.gguf"
+draft_path = "llm/qwen/qwen3.8-27b/MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
+projector_path = "llm/qwen/qwen3.8-27b/mmproj-F16.gguf"
+context_size = 131072
+memory_estimate_mib = 24576
+reasoning_format = "deepseek"
+reasoning_effort = "low"
+
+[models.gemma3]
+path = "cache/llama.cpp/gemma-3-1b-it-Q4_K_M.gguf"
+memory_estimate_mib = 2048
+
+[models.qwen3-06b]
+path = "llm/qwen/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf"
+residency = "resident"
+memory_estimate_mib = 1024

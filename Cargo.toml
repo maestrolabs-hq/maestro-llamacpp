@@ -41,7 +41,7 @@ path = "src/main.rs"
 # the shared release workflow takes the name of one binary.
 [[bin]]
 name = "stub-llama-server"
-path = "src/bin/stub_llama_server.rs"
+path = "src/bin/stub_llama_server/main.rs"
 
 # A hand-written parser for a format with nested tables and optional fields is
 # more code than this one, and wrong in ways that surface at run time.

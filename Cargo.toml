@@ -51,6 +51,7 @@ path = "src/bin/stub_llama_server/main.rs"
 # derives: the catalog is walked by hand so each error can name the entry and
 # the field it came from, which a derived deserializer cannot do.
 [dependencies]
+serde_json = "1"
 toml = { version = "1.1", default-features = false, features = [
     "parse",
     "serde",

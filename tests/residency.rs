@@ -102,6 +102,15 @@ fn a_resident_that_cannot_load_leaves_the_rest_of_the_catalog_serving() {
          {failures:?}"
     );
 
+    let loaded = serving.loaded();
+    assert!(
+        !loaded.iter().any(|id| id == RESIDENT),
+        "a start that failed must leave its slot empty. A half-built handle \
+         written there would hold the entry's estimate against the budget for \
+         as long as the router runs, and nothing would ever reclaim it: \
+         {loaded:?}"
+    );
+
     let reply = request(serving.address(), &get("/models/gemma3/v1/echo"));
     assert_eq!(
         status(&reply),

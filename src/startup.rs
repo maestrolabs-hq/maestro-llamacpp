@@ -71,9 +71,11 @@ mod tests {
 
         let over = reservation(Some(2_048), 4_096);
         assert!(
-            over.contains("4096") && over.contains("2048"),
+            over.contains("4096") && over.contains("2048") && !over.contains("leaving"),
             "a reservation larger than the budget is stated plainly rather \
-             than subtracted into a number that wrapped: {over}"
+             than subtracted into a number that wrapped. Both numbers survive \
+             a wrapping subtraction, so what is asserted is the absence of the \
+             clause that would carry the wrapped value: {over}"
         );
 
         let unbounded = reservation(None, 4_096);

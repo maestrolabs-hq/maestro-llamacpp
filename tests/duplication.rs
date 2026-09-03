@@ -66,6 +66,17 @@ const ACCEPTED: &[(&str, &str)] = &[
          this module exists to keep.",
     ),
     (
+        "loaded <-> resident_failures",
+        "Two accessors on Router, each reading one piece of state under \
+         whatever lock owns it and handing back an owned copy. That shape is \
+         the whole of both, which is why they match, and it is the accessor \
+         contract rather than duplication to remove. What they read has \
+         nothing in common: one walks every slot in the catalog, the other \
+         clones a vector the startup loader appended to. Merging them would \
+         mean one method taking a parameter saying which of two unrelated \
+         things to read, and neither name would survive it.",
+    ),
+    (
         "start <-> spawn",
         "start is spawn plus the readiness loop, and delegates to it -- the \
          same relationship as optional and required above. What they share is \

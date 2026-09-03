@@ -61,6 +61,7 @@ mod endpoint;
 mod head;
 mod loaded;
 mod relay;
+mod residents;
 mod slots;
 
 use slots::Slots;
@@ -179,7 +180,18 @@ impl Router {
     /// One thread per connection, because a streamed response occupies its
     /// thread for as long as the answer takes and this router serves one
     /// machine.
+    ///
+    /// Residents load on a thread of their own and the accept loop starts
+    /// immediately, so the router answers while they load. Loading first
+    /// would be smaller by a thread and is refused: [`Router::bind`] already
+    /// reserved the port, so a caller connects successfully into the kernel's
+    /// backlog and then waits with nothing to tell it why. A resident
+    /// carrying the default startup budget would make that a five-minute
+    /// silence from something that looks like a live router.
     pub fn serve(&self) {
+        let loading = Arc::clone(&self.shared);
+        thread::spawn(move || residents::load(&loading));
+
         for stream in self.listener.incoming().flatten() {
             let shared = Arc::clone(&self.shared);
             thread::spawn(move || {

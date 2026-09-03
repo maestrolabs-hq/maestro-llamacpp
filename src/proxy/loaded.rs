@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use crate::launch::Child;
+use crate::launch::{Child, Liveness};
 
 /// A child this router has running, and what deciding its fate needs.
 ///
@@ -34,10 +34,10 @@ pub(super) struct Loaded<C = Child> {
 /// Three paths in `slots` touch a slot's contents, and auditing this rule is
 /// auditing them:
 ///
-/// - `Slots::running`, the fast path, clones under the lock;
+/// - [`live_child`], the fast path, clones under the lock;
 /// - `Slots::admit`, the slow path, mints the reference with the child and
 ///   inserts its clone under the lock in the same breath;
-/// - `Slots::unload` and `Slots::clear`, behind eviction and `Router::stop`,
+/// - [`take_if_idle`] and `Slots::clear`, behind eviction and `Router::stop`,
 ///   take under the lock and hand nothing back.
 ///
 /// This is the rule that makes `Arc::strong_count` mean "somebody is reading
@@ -68,6 +68,41 @@ pub(super) type Slot<C = Child> = Mutex<Option<Loaded<C>>>;
 /// about references.
 pub(super) fn busy<T>(handle: &Arc<T>) -> bool {
     Arc::strong_count(handle) > 1
+}
+
+/// The live child in a slot, if there is one, marked as used just now.
+///
+/// The fast path: one slot's lock and nothing else, so a request for a model
+/// that is already loaded waits on no admission and on no other entry.
+///
+/// Where the slot invariant is kept rather than described -- the clone below
+/// happens under the lock this function holds, which is what lets
+/// `Arc::strong_count` mean "somebody is reading from this child" everywhere
+/// else.
+///
+/// Concrete in `Child` where its neighbours are generic, because liveness is
+/// the one question here that is about a process rather than about references.
+pub(super) fn live_child(slot: &Slot) -> Option<Arc<Child>> {
+    let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    let held = slot.as_mut()?;
+
+    // Liveness while the lock is held, so a child that exited since it last
+    // answered is not handed to a relay that will fail on it.
+    //
+    // Only when nothing else holds a reference: `try_wait` needs the process
+    // mutably, and `Arc::get_mut` succeeds exactly when the slot's handle is
+    // the only one. So a child that already has a reader goes unchecked -- the
+    // count proves a reader, not a live process -- and a dead one is handed on
+    // for the relay's own connection to discover.
+    if let Some(child) = Arc::get_mut(&mut held.child)
+        && matches!(child.check(), Liveness::Exited(_))
+    {
+        *slot = None;
+        return None;
+    }
+
+    held.last_used = Instant::now();
+    Some(Arc::clone(&held.child))
 }
 
 /// Empties a slot, unless something started reading from what is in it.

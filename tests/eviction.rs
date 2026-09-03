@@ -352,11 +352,22 @@ fn three_entries() -> String {
 #[test]
 fn a_child_that_becomes_busy_during_a_decision_is_not_taken_from_its_slot() {
     // Swept rather than timed once: the window is the length of one process
-    // kill, and where it falls depends on the machine.
-    let staggers = [0, 250, 500, 750, 1_000, 1_500, 2_000, 3_000];
+    // kill, and where it falls depends on the machine. The eight staggers are
+    // microseconds apart, so on a platform where spawning a process costs a
+    // third of a second they exercise one interleaving at eight times the
+    // price. The full sweep therefore runs only where that price is affordable
+    // -- the weekly heavy tier, which sets this variable -- while every pull
+    // request runs a two-point smoke that still guards the per-iteration slot
+    // invariant below.
+    let full_sweep = std::env::var_os("MAESTRO_EVICTION_FULL_SWEEP").is_some();
+    let staggers: &[u64] = if full_sweep {
+        &[0, 250, 500, 750, 1_000, 1_500, 2_000, 3_000]
+    } else {
+        &[0, 1_000]
+    };
     let mut outcomes = Vec::new();
 
-    for micros in staggers {
+    for &micros in staggers {
         let serving = budgeted(
             &three_entries(),
             ModelsRoot::with(&[MODEL, SECOND_MODEL, THIRD_MODEL]),
@@ -465,11 +476,18 @@ fn a_child_that_becomes_busy_during_a_decision_is_not_taken_from_its_slot() {
         drop(streaming);
     }
 
-    assert!(
-        outcomes.iter().any(|(_, kind)| *kind == "served"),
-        "no iteration evicted anything, so this no longer exercises the \
-         decision it is named for. An estimate raised past the budget, or a \
-         model file dropped from the root, refuses every iteration for a \
-         reason nothing here guards: {outcomes:?}"
-    );
+    // The coverage guard -- that the sweep made the decision fire at least
+    // once -- belongs to the full sweep alone. Two points can legitimately
+    // miss the window on a given machine, so asserting it on the smoke would
+    // make it flaky for a property the smoke is not there to prove. The slot
+    // invariant inside the loop is asserted either way.
+    if full_sweep {
+        assert!(
+            outcomes.iter().any(|(_, kind)| *kind == "served"),
+            "no iteration evicted anything, so this no longer exercises the \
+             decision it is named for. An estimate raised past the budget, or a \
+             model file dropped from the root, refuses every iteration for a \
+             reason nothing here guards: {outcomes:?}"
+        );
+    }
 }

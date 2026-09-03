@@ -1,0 +1,48 @@
+# Dependency updates.
+#
+# Grouped, because a pull request per patch bump is how review becomes a
+# rubber stamp. Weekly rather than daily for the same reason: the point is to
+# see the change, and nobody reads the fourth notification of the day.
+#
+# Security updates are separate and are not governed by this file -- they are
+# enabled by the organisation security configuration and open immediately,
+# because a vulnerability does not wait for Monday.
+
+version: 2
+updates:
+  # The actions are pinned to full SHAs by organisation policy, so this is the
+  # only thing that moves them. Without it the pins are frozen, not current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build"
+    groups:
+      # Patch and minor together: they are reviewed as "did anything break",
+      # and CI answers that in one run rather than five.
+      cargo-minor:
+        patterns: ["*"]
+        update-types: [minor, patch]
+      # Major separately, because it needs a human to read a changelog.
+      cargo-major:
+        patterns: ["*"]
+        update-types: [major]

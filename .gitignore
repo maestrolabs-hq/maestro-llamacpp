@@ -1,0 +1,85 @@
+# Build output, caches and machine-local state.
+#
+# Polyglot: a repository here may hold Rust, TypeScript and Python at once, and
+# a contributor should not have to add the ignore rule for whichever one they
+# happen to touch first.
+
+# ── Rust ────────────────────────────────────────────────────────────────────
+/target/
+**/*.rs.bk
+*.pdb
+# cargo-mutants and llvm-cov scratch space
+/mutants.out*/
+*.profraw
+*.profdata
+
+# ── Node and TypeScript ─────────────────────────────────────────────────────
+node_modules/
+.npm/
+*.tsbuildinfo
+.eslintcache
+# Vitest, Stryker and coverage output
+coverage/
+.nyc_output/
+reports/
+/stryker.log
+.stryker-tmp/
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+/build/
+/dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.hypothesis/
+
+# ── Editors and tooling ─────────────────────────────────────────────────────
+.idea/
+*.iml
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*.swo
+*~
+
+# ── Operating systems ───────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+
+# ── Secrets and machine-local state ─────────────────────────────────────────
+# Nothing here should ever be committed. The secret scan is the backstop, not
+# the first line of defence.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!**/testdata/**/*.key
+.direnv/
+
+# ── This estate's own artefacts ─────────────────────────────────────────────
+# A saved plan is a local decision about one machine, never shared.
+/plan.out
+/audit.txt
+/audit.err
+
+# Agent and tool state.
+.worktrees/
+.superpowers/

@@ -1,0 +1,61 @@
+# ADR 0001: One crate until a seam is real
+
+- Status: Accepted
+- Date: 2026-09-03
+
+## Context
+
+This repository ships a router in six slices: parse a catalog, launch and
+supervise a child, proxy one endpoint, add swapping, add residency, then prove
+it cross-platform. A layout has to be chosen before the first line, and the
+estate offers two precedents that disagree.
+
+`maestro-core` is a workspace of two crates, and the split there is
+load-bearing: `protocol` is the envelope shape, with consumers that are not the
+terminal client. The same manifest records what happened when that test was not
+applied. Four further crates existed, held no code, and were deleted. The
+comment left behind states the rule: a seam is only real when something varies
+across it.
+
+`maestro-pi-config` is a single crate with one binary, because nothing outside
+it has a reason to link against it.
+
+Measured against the six slices, nothing varies. Every slice ships inside the
+same binary, and none introduces a second consumer of any module. A workspace
+today would be several manifests describing one program.
+
+## Decision
+
+One crate, `maestro-llamacpp`, producing one binary, `model-router`. The
+catalog, the supervisor and the proxy are modules inside it, not crates beside
+it.
+
+`maestro-pi-config` is therefore the structural template for the manifest, the
+test layout, and the `duplication-test` input passed to the shared Rust
+workflow.
+
+## Consequences and risks
+
+The tree stays legible while it is small, and there is one manifest to keep
+current rather than several.
+
+The risk is the mirror of the one this avoids: a single crate can grow past
+the point where a split would have helped, and nothing forces the question.
+Two mechanical limits approximate it. `no_module_becomes_a_dumping_ground`
+fails a module over 250 lines, and the per-function lints in `Cargo.toml`
+(`too_many_lines`, `cognitive_complexity`, `too_many_arguments`) fail the
+shapes a size limit cannot see.
+
+Neither of those is the condition for reopening this decision, because neither
+measures coupling.
+
+## When this is reopened
+
+A second consumer of a module. Not a long file, and not a feeling that the
+tree is getting big.
+
+Concretely: something outside this binary needs to link against the catalog
+types, or a slice arrives whose module is genuinely used by two independent
+callers with different release cadences. Extracting a crate at that point is a
+small, mechanical change. Collapsing a speculative workspace is not, which is
+why the estate has already had to do it once.

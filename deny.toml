@@ -1,0 +1,22 @@
+# cargo-deny supersedes cargo-audit: advisories plus licences, bans and sources.
+# The workspace has no application dependencies, so every section below is a
+# guard against that changing silently rather than a filter over a real tree.
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+# Permissive only. A copyleft dependency is a decision, not an accident.
+# The list holds exactly what the tree uses: an unmatched allowance is a
+# warning, and this repository's bar is warning-free. Widen it when a
+# dependency arrives that needs it.
+allow = ["MIT"]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

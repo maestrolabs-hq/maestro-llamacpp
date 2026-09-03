@@ -1,0 +1,26 @@
+# The fast tier. Gates live in maestrolabs-hq/.github so one pinned SHA is not
+# four; triggers, cadence, concurrency and permissions stay here, where a
+# reader of this repository can see them.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  common:
+    uses: maestrolabs-hq/.github/.github/workflows/common-fast.yml@main
+
+  fast:
+    uses: maestrolabs-hq/.github/.github/workflows/rust-fast.yml@main
+    with:
+      duplication-test: duplication

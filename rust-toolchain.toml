@@ -1,0 +1,12 @@
+# The Rust version this repository is built and linted with.
+#
+# Pinned rather than floating: clippy gains lints between releases, so an
+# unpinned toolchain means CI can start failing on code nobody touched. Moving
+# it is a deliberate edit, reviewed like any other.
+#
+# This file is byte-identical across the estate and pinned by blob hash in
+# maestro-governance's baseline, so it cannot drift in one repository alone.
+
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt", "llvm-tools"]

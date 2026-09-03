@@ -1,0 +1,2 @@
+# Governance's pylint bar: max-args 5. Clippy's default is 7.
+too-many-arguments-threshold = 5

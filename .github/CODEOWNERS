@@ -1,0 +1,20 @@
+# Review ownership.
+#
+# One maintainer owns everything, which makes the catch-all rule honest rather
+# than decorative. The specific rules below exist so that when a second person
+# arrives, the boundaries are already drawn where they matter rather than
+# being invented under time pressure.
+
+*                       @FrancoisLDaigneault
+
+# Anything that decides what "correct" means. A change here changes every
+# repository's definition of a passing build.
+/.github/workflows/     @FrancoisLDaigneault
+/.pre-commit-config.yaml @FrancoisLDaigneault
+/clippy.toml            @FrancoisLDaigneault
+/deny.toml              @FrancoisLDaigneault
+/rust-toolchain.toml    @FrancoisLDaigneault
+
+# Recorded decisions. Editing one is not the same as editing code, and a
+# review of an ADR is a review of the reasoning rather than the diff.
+/docs/adr/              @FrancoisLDaigneault

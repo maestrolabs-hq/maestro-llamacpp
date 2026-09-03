@@ -1,0 +1,32 @@
+# The heavy tier: evidence, not a gate. Never a required context -- blocking a
+# merge on a long matrix is how a team learns to bypass its own checks.
+name: Heavy
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Monday 06:00 UTC, clear of the fleet audit at 07:00
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  # Only Scorecard publishes a SARIF result, so only this call is granted the
+  # permissions to do it. A called workflow cannot exceed its caller's
+  # ceiling, and raising the ceiling for the whole file would hand those
+  # rights to every other job as well.
+  common:
+    permissions:
+      contents: read
+      security-events: write
+      id-token: write
+    uses: maestrolabs-hq/.github/.github/workflows/common-heavy.yml@main
+
+  heavy:
+    uses: maestrolabs-hq/.github/.github/workflows/rust-heavy.yml@main
+    with:
+      msrv: "1.85"

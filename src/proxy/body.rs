@@ -24,17 +24,6 @@
 //! Getting any of them wrong routes a request to the wrong model, which then
 //! answers plausibly and nothing downstream notices.
 
-// Nothing calls this until the task that serves the generic endpoint wires it
-// in. `expect` rather than `allow` so it fails to compile once these are used,
-// which is what removes the scaffolding rather than leaving it behind to hide
-// something genuinely dead later.
-// Scoped to the non-test build because the unit tests below do call them, so
-// the expectation would be unfulfilled -- and therefore an error -- there.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired in by the generic endpoint")
-)]
-
 use std::io::Read;
 
 use serde_json::Value;

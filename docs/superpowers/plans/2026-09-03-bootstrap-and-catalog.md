@@ -334,7 +334,11 @@ threshold.
       the same enforced-rules table, with the sections that describe the
       supervisor and the protocol replaced by this repository's subject --- a
       router that supervises child processes and must behave the same on three
-      operating systems.
+      operating systems. Read the `writing-for-agents` skill first
+      (`mattpocock/skills`, `skills/productivity/writing-for-agents`) and apply
+      it: `AGENTS.md` is always-loaded context, so every line spends the window
+      on every turn. Prune no-ops, keep each rule in one source of truth, and
+      phrase each rule as the behaviour to perform.
 
 - [ ] Write `docs/adr/0001-one-crate-until-a-seam-is-real.md` recording the
       layout decision, its context, and the condition under which it is

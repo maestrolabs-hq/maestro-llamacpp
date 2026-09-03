@@ -206,7 +206,7 @@ kv-unified = "true"
 # measured under identical conditions; the steward correction journal will
 # decide between them on real rounds, not on file size.
 [models.qwen3-06b]
-path = "qwen/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf"
+path = "llm/qwen/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf"
 context_size = 32768
 residency = "on-demand"
 memory_estimate_mib = 1024

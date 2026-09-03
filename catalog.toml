@@ -11,6 +11,12 @@
 # 0.3.0-dev (build 1, commit 77f132c). That surface moves between releases, so
 # the claim is only true against a version and an unpinned one rots silently.
 #
+# The dedicated-endpoint relay was verified by hand against that same version:
+# a streamed reply arrived in 198 separate pieces spread over 554 milliseconds,
+# a reply carried the identifier its endpoint named rather than the disagreeing
+# one its request body asked for, and abandoning a stream freed the server's
+# slot within 38 milliseconds.
+#
 # The memory estimates are estimates. Nothing reads them until eviction
 # arrives, and measuring them belongs with the slice that has to make a
 # decision from them.

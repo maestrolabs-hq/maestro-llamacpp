@@ -13,7 +13,8 @@
 //! a catalog uses to ask for anything else.
 
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use maestro_llamacpp::catalog::{Entry, RelativePath, Residency};
 use maestro_llamacpp::launch::{Liveness, Server};
@@ -161,6 +162,38 @@ fn two_children_started_together_get_different_ports() {
 
     first.stop();
     second.stop();
+}
+
+/// A child that outlives the value representing it is a leaked server.
+///
+/// This is not only tidiness. A caller that drops a `Child` on an error path
+/// would otherwise leave a process holding a port and whatever memory the
+/// model took, with nothing left in the program that knows about it. It is
+/// also how a run of these tests left ten stubs behind: a panicking test drops
+/// its child, and every one of them kept running.
+#[test]
+fn a_dropped_child_does_not_outlive_the_router() {
+    let root = ModelsRoot::with(&[MODEL]);
+    let address = {
+        let child = server()
+            .start(&entry("dropped"), root.path())
+            .expect("the stub becomes ready");
+        let address = child.endpoint();
+        assert_eq!(
+            health(address),
+            Some(200),
+            "answering before it is dropped, so the assertion below is not vacuous"
+        );
+        address
+    };
+
+    for _ in 0..200 {
+        if health(address).is_none() {
+            return;
+        }
+        sleep(Duration::from_millis(25));
+    }
+    panic!("a dropped child kept serving on {address}");
 }
 
 /// Slice 1 validated the shape of a location and deferred its existence to

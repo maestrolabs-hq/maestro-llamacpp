@@ -23,13 +23,16 @@
 //! systems are all implementation and stay inside.
 
 use std::fmt;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::process::ExitStatus;
+use std::process::{Command, ExitStatus, Stdio};
 
 use crate::catalog::Entry;
 
 mod invocation;
+
+/// What the server is called. Located on the search path, never bundled.
+const BINARY_NAME: &str = "llama-server";
 
 /// Why a server could not be located, started, or resolved.
 ///
@@ -63,9 +66,6 @@ pub enum Liveness {
 ///
 /// Located, never bundled: a configured path when there is one, otherwise
 /// whatever the operating system finds on the search path.
-// The representation arrives with the behaviour, in the commit that spawns a
-// child. Until then nothing constructs one, and the field has no reader.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct Server {
     binary: PathBuf,
@@ -89,8 +89,28 @@ impl Server {
     ///
     /// Returns a [`Failure`] when a configured path does not exist, or when
     /// nothing named `llama-server` is on the search path.
-    pub fn located(_configured: Option<&Path>) -> Result<Self, Failure> {
-        todo!("locating the server binary arrives with the spawn")
+    pub fn located(configured: Option<&Path>) -> Result<Self, Failure> {
+        if let Some(path) = configured {
+            return if path.is_file() {
+                Ok(Self {
+                    binary: path.to_path_buf(),
+                })
+            } else {
+                Err(Failure(format!(
+                    "the configured server binary is not there: '{}'",
+                    path.display()
+                )))
+            };
+        }
+
+        on_search_path(BINARY_NAME)
+            .map(|binary| Self { binary })
+            .ok_or_else(|| {
+                Failure(format!(
+                    "no server binary was configured, and no '{BINARY_NAME}' \
+                     was found on the search path"
+                ))
+            })
     }
 
     /// Starts one entry and returns once it is ready to answer.
@@ -100,8 +120,56 @@ impl Server {
     /// Returns a [`Failure`] naming the entry when its model file is missing,
     /// when the child exits while loading, or when it does not become ready
     /// inside the entry's startup budget.
-    pub fn start(&self, _entry: &Entry, _root: &Path) -> Result<Child, Failure> {
-        todo!("spawning and polling arrive with the readiness loop")
+    pub fn start(&self, entry: &Entry, root: &Path) -> Result<Child, Failure> {
+        // Checked before spawning, so a missing model is reported as a missing
+        // model rather than as whatever exit status the server chooses for it.
+        let model = entry.path.resolve(root);
+        if !model.is_file() {
+            return Err(Failure(format!(
+                "entry '{}': no model file at '{}'",
+                entry.id,
+                model.display()
+            )));
+        }
+
+        let port = free_port().map_err(|error| {
+            Failure(format!(
+                "entry '{}': no loopback port was free: {error}",
+                entry.id
+            ))
+        })?;
+
+        // The child is deliberately not detached. Keeping it in this process
+        // group means a terminal interrupt reaches it; detaching would orphan
+        // it. The Windows equivalent is a job object, which needs a dependency
+        // and is recorded as a risk rather than half-built here.
+        //
+        // Output goes nowhere, and both alternatives were tried and rejected.
+        // A pipe nobody drains blocks the child once its buffer fills, and
+        // llama-server logs heavily through exactly the window this slice
+        // waits out. Inheriting is worse: a child then holds whatever stdout
+        // its parent had, so an orphan keeps a test harness's captured pipe
+        // open and the harness waits for an end-of-file that never comes.
+        // Draining threads would keep the log, and belong to the slice that
+        // has somewhere to put it.
+        let process = Command::new(&self.binary)
+            .args(invocation::of(entry, root, port))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                Failure(format!(
+                    "entry '{}': the server binary '{}' would not start: {error}",
+                    entry.id,
+                    self.binary.display()
+                ))
+            })?;
+
+        Ok(Child {
+            id: entry.id.clone(),
+            address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+            process,
+        })
     }
 }
 
@@ -109,7 +177,7 @@ impl Child {
     /// Where this child answers.
     #[must_use]
     pub fn endpoint(&self) -> SocketAddr {
-        todo!("the address is recorded when the child is spawned")
+        self.address
     }
 
     /// Whether the process is still there.
@@ -135,4 +203,28 @@ impl Child {
 /// set, because there is then nowhere to resolve against.
 pub fn models_root() -> Result<PathBuf, Failure> {
     todo!("resolution arrives with the launch command")
+}
+
+/// The first match for a name on the search path, with the platform's
+/// executable suffix, so the Windows leg finds `llama-server.exe`.
+fn on_search_path(name: &str) -> Option<PathBuf> {
+    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    let search = std::env::var_os("PATH")?;
+    std::env::split_paths(&search)
+        .map(|directory| directory.join(&file))
+        .find(|candidate| candidate.is_file())
+}
+
+/// A loopback port the operating system says is free.
+///
+/// Binding zero, reading the assignment and closing leaves a window in which
+/// something else can take the port before the child binds it. That race is
+/// real and this slice does not pretend otherwise: it reports the failure and
+/// does not retry. The alternatives are worse -- passing the descriptor to the
+/// child is not portable to Windows, and a fixed base port with an offset
+/// collides with whatever else is already on the machine.
+fn free_port() -> std::io::Result<u16> {
+    let listener = TcpListener::bind((invocation::HOST, 0))?;
+    let port = listener.local_addr()?.port();
+    Ok(port)
 }

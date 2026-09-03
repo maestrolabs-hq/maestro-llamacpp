@@ -24,11 +24,6 @@
 //! written, anything else yields the flag and the value as two arguments.
 //! Five keys are short forms with different long spellings.
 
-// Nothing outside the unit tests below calls into this module until `start`
-// spawns a child with what it builds. Removed in that commit; until then the
-// alternative is contrived wiring written only to satisfy a lint.
-#![allow(dead_code)]
-
 use std::ffi::OsString;
 use std::path::Path;
 

@@ -57,10 +57,31 @@
 # are recorded above as they were measured before the fixes, which touched
 # neither the relay nor the decision that orders a swap.
 #
-# The memory estimates are estimates. They are what eviction decides from, and
-# they are not measurements: an entry that costs more than its figure is
-# admitted and then fails to load, which shows up as a start that names its
-# entry rather than as a wrong decision.
+# Residency was verified by hand against that same version, on an RTX 5090
+# carrying 32607 MiB, with MAESTRO_MEMORY_BUDGET_MIB=30000. Every step:
+#
+#   startup             the resident loaded in 5.4 s before any request, and
+#                       the reservation line read "residents reserve 4096 MiB
+#                       of 30000 MiB, leaving 25904 MiB for everything else"
+#   no load delay       the resident answered in 0.31 s. gemma3, asked for the
+#                       first time, paid 1.29 s for its load -- which is the
+#                       difference the whole slice exists to buy
+#   beside the largest  qwen38 loaded next to the resident in 5.5 s and
+#                       answered, with two children serving at once, and the
+#                       resident still answering afterwards
+#   the ceiling refuses under 25000 MiB, qwen38 was refused 503 with "'qwen38'
+#                       needs 24576 MiB and the budget of 25000 MiB is held by:
+#                       qwen3-4b (4096 MiB, resident)"
+#   degraded startup    pointed at a file that is not there, the resident named
+#                       itself and its reason and the router served the rest of
+#                       the catalog without it
+#
+# The estimates are estimates, and this slice measured how far off one of them
+# is. The resident is written at 4096 MiB; on the video device it held about
+# 7565 MiB, which is why it is on the processor instead -- see the entry. An
+# entry that costs more than its figure is admitted and then fails to load,
+# which shows up as a start that names its entry rather than as a wrong
+# decision. That is exactly what qwen38 did before the resident was moved.
 
 version = 1
 
@@ -147,17 +168,34 @@ kv-unified = "true"
 # the router will ever make, and a figure that has to be read out of a defaults
 # table to be known is a figure that will be got wrong.
 #
-# n-gpu-layers is inherited, which puts this on the video device beside the
-# large entries rather than on the processor away from them. Named here rather
-# than left silent, because it is what makes the reservation compete with
-# qwen38 for the same memory. Whether that is the right side is measured, not
-# guessed, and moving it is one line here rather than a change to the code.
+# n-gpu-layers is overridden to 0, putting this on the processor rather than on
+# the video device with the large entries. Measured on an RTX 5090 with 32607
+# MiB, against llama-server 0.3.0-dev (build 1, commit 77f132c):
+#
+#   on the device   held about 7565 MiB of video memory, loaded in 2.7 s, and
+#                   answered in 0.13 s -- but left too little for qwen38, whose
+#                   server then exited while loading and answered 502
+#   on the processor held about 900 MiB of video memory, loaded in 6.7 s, and
+#                   answered in 0.47 s -- and qwen38 loaded beside it in 6.4 s,
+#                   with both children serving at once
+#
+# So the device is where this entry cannot go: it would make the general model
+# unservable on this machine, which is the opposite of what a resident is for.
+# The cost is a slower load and roughly a third of a second per answer, neither
+# of which the caller this entry exists for will notice.
+#
+# The estimate stays at 4096 MiB even though this now holds far less video
+# memory than that. The budget is one number for two kinds of memory, so an
+# estimate that reflected only the video side would let the router admit models
+# the machine cannot hold once system memory is counted. Pessimistic in the
+# safe direction, and recorded rather than tuned.
 [models.qwen3-4b]
 path = "llm/qwen/qwen3-4b/Qwen3-4B-Q4_K_M.gguf"
 residency = "resident"
 memory_estimate_mib = 4096
 
 [models.qwen3-4b.flags]
+n-gpu-layers = "0"
 fa = "on"
 np = "1"
 kv-unified = "true"

@@ -15,6 +15,9 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 description = "Router that supervises llama.cpp server processes and serves one endpoint per model"
+# The second binary made `cargo run` ambiguous. This names the shipped one, so
+# the commands in README.md work as written.
+default-run = "model-router"
 
 # The interface the tests link against. It carries the catalog and nothing
 # else: the library seam exists for that one consumer, and widening it would

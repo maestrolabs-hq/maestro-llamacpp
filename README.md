@@ -4,9 +4,10 @@ maestro-llamacpp is the estate's model router. It supervises llama.cpp server
 processes and exposes one OpenAI-compatible endpoint per model plus a generic
 routing endpoint.
 
-Status: the first slice. The router reads and validates a catalog. It does not
-launch a server, open a port, or route anything yet -- those arrive with the
-later slices the design names.
+Status: the second slice. The router reads and validates a catalog, and takes
+one entry from it as far as a running `llama-server` on a loopback port that
+answers a health check. It does not route or proxy anything yet -- that
+arrives with the later slices the design names.
 
 ## Checking a catalog
 
@@ -35,6 +36,41 @@ models.toml is not usable:
 `catalog.toml` holds the models this router serves. Every location in it is
 relative to a models root supplied at run time, so the file describes a set of
 models without naming the machine they sit on.
+
+## Launching one model
+
+```sh
+model-router launch catalog.toml gemma3
+```
+
+Starts that entry, waits until it answers, then stops it again:
+
+```text
+gemma3 is ready at http://127.0.0.1:41273 after 1.4 seconds
+gemma3 stopped
+```
+
+This is deliberately not a long-running command. Staying up until interrupted
+needs a signal handler for no gain in a slice with nothing to serve; launching,
+proving readiness and stopping is the whole of what this slice claims.
+
+A child that never becomes ready fails when its startup budget expires, and a
+child that exits while loading fails with its status rather than waiting the
+budget out. Every failure names the entry it came from.
+
+### Where the models are
+
+Catalog locations are relative, and resolve against a models root read at run
+time:
+
+| Source | Value |
+| --- | --- |
+| `MAESTRO_MODELS_ROOT` | used as given, when set and not empty |
+| otherwise | `models` under the home directory |
+
+The server binary is located rather than bundled: `llama-server` is taken from
+the search path, with the platform's executable suffix, so no tracked file
+names one machine.
 
 ## Documents
 

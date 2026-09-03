@@ -41,6 +41,16 @@ const ACCEPTED: &[(&str, &str)] = &[
          missing defaults table is legitimate and yields the empty set, a \
          missing models table is a problem the catalog is refused for.",
     ),
+    (
+        "start <-> spawn",
+        "start is spawn plus the readiness loop, and delegates to it -- the \
+         same relationship as optional and required above. What they share is \
+         the shape every fallible step in that module has: do one thing, and \
+         name the entry when it fails. That is the module's error contract \
+         rather than duplication to remove. Collapsing them would put the wait \
+         inside the function that builds a process, and keeping those apart is \
+         what makes either of them readable.",
+    ),
 ];
 
 /// `path:lines function name <-> path:lines function name` -> `name <-> name`.

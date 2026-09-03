@@ -31,7 +31,6 @@ jinja = "true"
 n-gpu-layers = "999"
 fit = "on"
 fit-target = "1536"
-stop-timeout = "30"
 
 # The general-purpose model, with a speculative draft and a vision projector.
 [models.qwen38]

@@ -45,7 +45,10 @@ fn the_golden_catalog_parses_field_by_field() {
     assert_eq!(qwen.context_size, 131_072);
     assert_eq!(qwen.memory_estimate_mib, 24_576);
     assert_eq!(qwen.reasoning_format.as_deref(), Some("deepseek"));
-    assert_eq!(qwen.reasoning_effort, None, "only the semantic entry sets it");
+    assert_eq!(
+        qwen.reasoning_effort, None,
+        "only the semantic entry sets it"
+    );
 }
 
 #[test]
@@ -60,7 +63,10 @@ fn an_entry_inherits_every_default_it_does_not_set() {
     assert_eq!(gemma.projector_path, None, "no projector");
 
     let qwen = catalog.entry("qwen38").expect("qwen38");
-    assert_eq!(qwen.context_size, 131_072, "the entry overrides the default");
+    assert_eq!(
+        qwen.context_size, 131_072,
+        "the entry overrides the default"
+    );
 
     assert_eq!(
         qwen.flags.get("jinja").map(String::as_str),
@@ -157,8 +163,7 @@ fn every_error_is_reported_not_only_the_first() {
                 [models.alpha]\ncontext_size = 0\nmemory_estimate_mib = 512\n\
                 [models.beta]\npath = \"b.gguf\"\ncontext_size = 4096\nmemory_estimate_mib = 0\n";
     let report = Catalog::parse(text)
-        .err()
-        .expect("both entries are invalid")
+        .expect_err("both entries are invalid")
         .to_string();
     assert!(report.contains("alpha"), "the first entry:\n{report}");
     assert!(report.contains("beta"), "the second entry too:\n{report}");

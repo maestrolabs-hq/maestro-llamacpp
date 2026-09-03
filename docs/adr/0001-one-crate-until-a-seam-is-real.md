@@ -59,3 +59,21 @@ types, or a slice arrives whose module is genuinely used by two independent
 callers with different release cadences. Extracting a crate at that point is a
 small, mechanical change. Collapsing a speculative workspace is not, which is
 why the estate has already had to do it once.
+
+## Update, 2026-09-03: the first half of that condition fired
+
+Slice 1 arrived with tests that assert a parsed catalog field by field and call
+the path constructor directly. A Rust integration test links against a crate's
+library target, and this crate had none, so the test target became exactly the
+thing this decision named: a consumer outside the binary needing the catalog
+types.
+
+The resolution is a library target, not a second crate. It is still one crate,
+one manifest, and one shipped artefact; `src/main.rs` is a shell over the
+library, and `src/lib.rs` exposes the catalog and nothing else. The clause
+above anticipated a crate extraction because it anticipated a production
+consumer. A test target is a narrower case, and it is met by the narrower
+change.
+
+The decision itself is unchanged: one crate until something varies across a
+seam. A second consumer that is not a test still reopens it.

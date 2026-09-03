@@ -1,10 +1,12 @@
-# The model router. One binary, no library.
+# The model router. One crate, one shipped binary, and a library target that
+# exists so the tests can link against the catalog types.
 #
 # One crate, not a workspace: a seam is only real when something varies across
 # it, and across all six slices of the design nothing does. Every slice ships
 # inside this binary and none introduces a second consumer of any module.
-# docs/adr/0001-one-crate-until-a-seam-is-real.md records the decision and the
-# condition under which it is reopened.
+# docs/adr/0001-one-crate-until-a-seam-is-real.md records the decision, the
+# condition under which it is reopened, and why the test target firing that
+# condition bought a library target rather than a second crate.
 
 [package]
 name = "maestro-llamacpp"
@@ -14,13 +16,26 @@ rust-version = "1.85"
 license = "MIT"
 description = "Router that supervises llama.cpp server processes and serves one endpoint per model"
 
+# The interface the tests link against. It carries the catalog and nothing
+# else: the library seam exists for that one consumer, and widening it would
+# be a promise no caller has asked for.
+[lib]
+name = "maestro_llamacpp"
+path = "src/lib.rs"
+
 [[bin]]
 name = "model-router"
 path = "src/main.rs"
 
-# No application dependencies yet. The catalog slice is the first thing
-# allowed to add one, and it arrives with the licence allowance it needs.
+# A hand-written parser for a format with nested tables and optional fields is
+# more code than this one, and wrong in ways that surface at run time.
+#
+# Reading only: the catalog is never written, so `display` stays off. `serde`
+# is on because it gates the `Table` value type, not because anything here
+# derives: the catalog is walked by hand so each error can name the entry and
+# the field it came from, which a derived deserializer cannot do.
 [dependencies]
+toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
 
 # Measured, not assumed: the whole pedantic group costs two fixes on this
 # codebase. The lints that make it noisy elsewhere (must_use_candidate,

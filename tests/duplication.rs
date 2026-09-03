@@ -13,7 +13,35 @@ use std::process::Command;
 const THRESHOLD: &str = "0.85";
 
 /// Pairs we have looked at and chosen to keep, with the reason.
-const ACCEPTED: &[(&str, &str)] = &[];
+const ACCEPTED: &[(&str, &str)] = &[
+    (
+        "optional <-> required",
+        "required is optional plus one guard, and delegates to it. Collapsing \
+         them would mean one function taking a boolean saying whether the \
+         field is mandatory, which is the shape both of these exist to avoid.",
+    ),
+    (
+        "as_positive <-> as_residency",
+        "Both convert one value and phrase one refusal, so they share a shape. \
+         What they check does not overlap at all: integer bounds against enum \
+         membership. A merged converter would take the check as a parameter \
+         and be longer than both.",
+    ),
+    (
+        "as_residency <-> as_location",
+        "Both read text and hand it to something that owns the rule -- \
+         Residency::parse and RelativePath::new respectively. The shared line \
+         is the as_text call; the rule each defers to is the point, and it \
+         lives elsewhere in both cases.",
+    ),
+    (
+        "defaults <-> entries",
+        "Both fetch a top-level table and build from it, which is where the \
+         structural match comes from. They differ in what absence means: a \
+         missing defaults table is legitimate and yields the empty set, a \
+         missing models table is a problem the catalog is refused for.",
+    ),
+];
 
 /// `path:lines function name <-> path:lines function name` -> `name <-> name`.
 /// Line numbers move whenever anything above them moves.

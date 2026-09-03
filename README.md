@@ -183,6 +183,20 @@ pgrep -af llama-server
 A signal handler needs a dependency and a Windows job object, which is a
 change with its own gates to clear rather than a line to add here.
 
+**Three smaller things are known and not addressed.** Recorded so the next
+slice inherits them rather than discovering them:
+
+- A decision naming two entries takes them in turn and stops at the first that
+  gained a reader, so an operator can lose a warm model *and* still be refused.
+  The budget is never overcommitted by this -- the router ends under-loaded
+  rather than over -- which is what makes it a cost rather than a defect.
+- The tests read "this child stopped" from its port going quiet. Nothing stops
+  a later child binding that same ephemeral port, which would fail while
+  blaming the invariant rather than the coincidence.
+- Taking a slot drops the child inside the slot's own guard, so the kill and
+  the reaping run under it. A child that will not die holds that guard, and
+  with it every admission.
+
 **A stream is passed through as it arrives.** The router has no HTTP
 dependency: it reads the request head -- the request line and the headers --
 rewrites it, and copies the response back without interpreting a byte of it. A

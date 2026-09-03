@@ -169,6 +169,40 @@ fn every_error_is_reported_not_only_the_first() {
     assert!(report.contains("beta"), "the second entry too:\n{report}");
 }
 
+/// One bad entry can be wrong in several ways at once, and a reader fixing it
+/// should see all of them before running the tool again.
+#[test]
+fn one_entry_reports_all_of_its_own_faults() {
+    let text = "version = 1\n\
+                [models.alpha]\ncontext_size = 0\ncolour = \"red\"\n";
+    let report = Catalog::parse(text)
+        .expect_err("the entry is invalid three times over")
+        .to_string();
+    for expected in ["path", "context_size", "memory_estimate_mib", "colour"] {
+        assert!(
+            report.contains(expected),
+            "'{expected}' must be reported alongside the others:\n{report}"
+        );
+    }
+}
+
+/// The file that ships cannot rot away from the parser that reads it.
+#[test]
+fn the_shipped_catalog_is_valid() {
+    let shipped = concat!(env!("CARGO_MANIFEST_DIR"), "/catalog.toml");
+    let text = std::fs::read_to_string(shipped).expect("catalog.toml ships with this repository");
+    let catalog = Catalog::parse(&text).unwrap_or_else(|report| {
+        panic!("the shipped catalog must be valid:\n{report}");
+    });
+    assert!(
+        catalog
+            .entries
+            .iter()
+            .any(|entry| entry.residency == Residency::Resident),
+        "one entry is held loaded, or the steward has nothing to talk to"
+    );
+}
+
 #[test]
 fn a_machine_anchored_path_cannot_be_represented() {
     for anchored in [

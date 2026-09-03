@@ -116,47 +116,63 @@ fn entry(
     let mut merged = defaults.flags.clone();
     merged.extend(flags(table, &scope, problems));
 
+    // Every field is read before any one of them is allowed to fail the
+    // entry. Short-circuiting on the first would hide the rest until the
+    // reader had fixed it and run again, one mistake per run.
+    let path = required(table, &scope, "path", problems, as_location);
+    let draft_path = optional(table, &scope, "draft_path", problems, as_location);
+    let projector_path = optional(table, &scope, "projector_path", problems, as_location);
+    let context_size = settled(
+        table,
+        optional(table, &scope, "context_size", problems, as_positive).or(defaults.context_size),
+        &scope,
+        "context_size",
+        problems,
+    );
+    let memory_estimate_mib = settled(
+        table,
+        optional(table, &scope, "memory_estimate_mib", problems, as_positive)
+            .or(defaults.memory_estimate_mib),
+        &scope,
+        "memory_estimate_mib",
+        problems,
+    );
+    let residency = optional(table, &scope, "residency", problems, as_residency)
+        .or(defaults.residency)
+        .unwrap_or(Residency::OnDemand);
+    let reasoning_format = optional(table, &scope, "reasoning_format", problems, as_text)
+        .or_else(|| defaults.reasoning_format.clone());
+    let reasoning_effort = optional(table, &scope, "reasoning_effort", problems, as_text)
+        .or_else(|| defaults.reasoning_effort.clone());
+
     Some(Entry {
         id: id.to_owned(),
-        path: required(table, &scope, "path", problems, as_location)?,
-        draft_path: optional(table, &scope, "draft_path", problems, as_location),
-        projector_path: optional(table, &scope, "projector_path", problems, as_location),
-        context_size: inherited(
-            optional(table, &scope, "context_size", problems, as_positive),
-            defaults.context_size,
-            &scope,
-            "context_size",
-            problems,
-        )?,
-        residency: optional(table, &scope, "residency", problems, as_residency)
-            .or(defaults.residency)
-            .unwrap_or(Residency::OnDemand),
-        memory_estimate_mib: inherited(
-            optional(table, &scope, "memory_estimate_mib", problems, as_positive),
-            defaults.memory_estimate_mib,
-            &scope,
-            "memory_estimate_mib",
-            problems,
-        )?,
-        reasoning_format: optional(table, &scope, "reasoning_format", problems, as_text)
-            .or_else(|| defaults.reasoning_format.clone()),
-        reasoning_effort: optional(table, &scope, "reasoning_effort", problems, as_text)
-            .or_else(|| defaults.reasoning_effort.clone()),
+        path: path?,
+        draft_path,
+        projector_path,
+        context_size: context_size?,
+        residency,
+        memory_estimate_mib: memory_estimate_mib?,
+        reasoning_format,
+        reasoning_effort,
         flags: merged,
     })
 }
 
-/// What the entry set, else what it inherits, else a problem naming both the
-/// field and the fact that no default covered it.
-fn inherited(
-    own: Option<u32>,
-    default: Option<u32>,
+/// A value the entry has one way or another, or a problem saying it has none.
+///
+/// Absence and invalidity are different failures and only one of them belongs
+/// here. A value that was present but wrong has already been described by its
+/// converter, and calling it missing as well would send the reader looking for
+/// a field that is sitting in front of them.
+fn settled(
+    table: &Table,
+    value: Option<u32>,
     scope: &str,
     field: &str,
     problems: &mut Vec<String>,
 ) -> Option<u32> {
-    let value = own.or(default);
-    if value.is_none() {
+    if value.is_none() && table.get(field).is_none() {
         problems.push(problem(
             scope,
             field,

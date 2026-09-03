@@ -1,0 +1,62 @@
+# Model routing
+
+The vocabulary of serving local models: what the router knows about, and what
+each name means. Terms only, no mechanism -- the design specification carries
+the architecture, and the code carries the behaviour.
+
+## Language
+
+**Catalog**:
+The set of models this router can serve, and the settings they share. One
+file, read at startup.
+_Avoid_: config, registry, manifest.
+
+**Catalog entry**:
+One model in the catalog, with everything needed to serve it.
+_Avoid_: record, item, definition.
+
+**Model identifier**:
+The name an entry is addressed by, both in the catalog and in the endpoint
+that serves it. It names a model, never the role a model happens to fill: the
+resident entry is `qwen3-06b` rather than `steward`, because a role name
+becomes wrong the moment a second caller uses the same model.
+_Avoid_: model name, key, slug.
+
+**Residency**:
+Whether a model is held loaded or loaded when something asks for it. Every
+entry declares one.
+
+**Resident**:
+Loaded at startup and never evicted, so a caller never waits for a load.
+
+**On-demand**:
+Loaded on first use and evictable afterwards, competing for what memory the
+resident models leave.
+
+**Eviction**:
+Unloading an on-demand model to make room for another. Resident models are
+never candidates.
+
+**Defaults table**:
+The settings entries inherit when they do not state their own. An entry
+overrides a default by setting the field; it cannot unset one.
+
+**Flags table**:
+Server settings the catalog carries and the router passes through without
+interpreting. Their meaning belongs to the server, which is what keeps a
+change to that server's flag surface an edit to the catalog rather than to the
+code.
+
+**Reasoning preset**:
+How a model's reasoning is asked for and read back: the format that delimits
+it, and the effort level requested. Only models that reason carry either.
+
+**Memory estimate**:
+What loading an entry is expected to cost. An estimate, used to decide what
+fits, never a measurement.
+
+**Models root**:
+The directory catalog locations resolve against, supplied at run time. Its
+existence is why every location in a catalog is relative, and why one catalog
+is correct on every machine.
+_Avoid_: model directory, weights path.

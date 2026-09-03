@@ -1,0 +1,33 @@
+# The model router. One binary, no library.
+#
+# One crate, not a workspace: a seam is only real when something varies across
+# it, and across all six slices of the design nothing does. Every slice ships
+# inside this binary and none introduces a second consumer of any module.
+# docs/adr/0001-one-crate-until-a-seam-is-real.md records the decision and the
+# condition under which it is reopened.
+
+[package]
+name = "maestro-llamacpp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Router that supervises llama.cpp server processes and serves one endpoint per model"
+
+[[bin]]
+name = "model-router"
+path = "src/main.rs"
+
+# No application dependencies yet. The catalog slice is the first thing
+# allowed to add one, and it arrives with the licence allowance it needs.
+[dependencies]
+
+# Measured, not assumed: the whole pedantic group costs two fixes on this
+# codebase. The lints that make it noisy elsewhere (must_use_candidate,
+# missing_errors_doc) fire on library public APIs, and this is a binary.
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+too_many_lines = "warn"
+cognitive_complexity = "warn"
+# Governance uses 5; clippy defaults to 7.
+too_many_arguments = "warn"

@@ -93,11 +93,11 @@ Two consequences that shape the tasks:
   request.** `rust-fast.yml` takes the target name as a required input, so the
   skeleton cannot ship without it.
 
-## Decisions this plan needs
+## Decisions, resolved
 
-The specification is silent on six points that Delivery 2 cannot avoid. Each
-carries the default this plan adopts. Confirm them before Task 7; a different
-answer changes the schema, not the task order.
+The specification is silent on six points that Delivery 2 cannot avoid. All six
+are now settled: five stand as the defaults this plan proposed, and the sixth
+was decided against its default. Task 7 needs no further confirmation.
 
 1. **Reasoning fields.** The specification says "reasoning preset (Qwen3
    hybrid thinking effort)", one field. The current catalog carries two
@@ -126,9 +126,12 @@ answer changes the schema, not the task order.
    without it every entry repeats the same five settings.
 6. **The resident model identifier.** The specification says "a small
    instruction model (Qwen3 0.6B class)" without an identifier, and no such
-   file is installed yet. *Default:* the identifier `steward`, and slice 1 does
-   not check that any file exists --- existence is a launch concern, which is
-   slice 2.
+   file is installed yet. *Resolved against the default:* the identifier is
+   `qwen3-06b`, not `steward`. The steward specification in `maestro-pi-config`
+   already names the endpoint `/models/qwen3-06b/v1`, and the catalog names
+   models, not roles --- a role-named identifier becomes wrong the moment a
+   second consumer of the same model appears. Slice 1 still does not check
+   that any file exists --- existence is a launch concern, which is slice 2.
 
 ---
 
@@ -417,7 +420,7 @@ observed for the intended reason.
 - [ ] Write the golden test: a fixture catalog under `tests/fixtures/`
       carrying the four entries the specification names --- `qwen38` with its
       draft model and projector, `qwen38-semantic` with a low reasoning
-      effort, `gemma3`, and the resident `steward` entry. Assert the parsed
+      effort, `gemma3`, and the resident `qwen3-06b` entry. Assert the parsed
       value field by field: identifiers, relative paths, context sizes,
       residency, and the reasoning fields that only two entries set. Every
       path in the fixture is relative; none names a machine.

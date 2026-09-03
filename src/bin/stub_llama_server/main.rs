@@ -1,21 +1,27 @@
 //! A stand-in for `llama-server`, so continuous integration can supervise a
-//! real process without a real model.
+//! real process and relay a real stream without a real model.
 //!
 //! A real server needs a multi-gigabyte model file and a graphics card.
 //! Neither exists in continuous integration, so a test that requires one is a
-//! test that never runs. This binary speaks the part of the health contract
-//! the router reads -- `/health`, 503 while loading and 200 once ready -- and
-//! nothing else. The supervision path around it is identical either way: the
-//! router picks a port, builds a command line, spawns, polls, and kills.
+//! test that never runs. This binary speaks the parts of the server contract
+//! the router reads, and the supervision and relay paths around it are
+//! identical either way: the router picks a port, builds a command line,
+//! spawns, polls, reads a request head, and copies bytes.
+//!
+//! This file decides what the stub was asked to do; [`reply`] decides what one
+//! connection is answered with.
 //!
 //! It is never released. The shared release workflow takes the name of one
 //! binary, and that binary is `model-router`.
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
+
+mod reply;
+use reply::Pacing;
 
 /// What the stub was asked to do. Every other argument is ignored on purpose:
 /// the same invocation that drives `llama-server` has to drive this.
@@ -25,6 +31,7 @@ struct Options {
     ready_after: Duration,
     exit_after: Option<Duration>,
     exit_code: u8,
+    pacing: Pacing,
 }
 
 fn main() -> ExitCode {
@@ -58,12 +65,30 @@ fn main() -> ExitCode {
         });
     }
 
+    serve(&listener, &options)
+}
+
+/// Accepts until the process ends, one thread per connection.
+///
+/// Threaded because a paced stream holds its connection for as long as it
+/// runs. Answering in the accept loop would make a second caller wait out the
+/// first one's stream, which is a property no real server has and no test
+/// should have to work around.
+fn serve(listener: &TcpListener, options: &Options) -> ExitCode {
     let started = Instant::now();
     for stream in listener.incoming().flatten() {
         let ready = started.elapsed() >= options.ready_after;
-        // A failed reply is a client that hung up. Nothing here is durable,
-        // so the next connection is the only thing that matters.
-        drop(answer(stream, ready));
+        let pacing = Pacing {
+            events: options.pacing.events,
+            gap: options.pacing.gap,
+            die_after: options.pacing.die_after,
+            hangup_marker: options.pacing.hangup_marker.clone(),
+        };
+        thread::spawn(move || {
+            // A failed reply is a client that hung up. Nothing here is
+            // durable, so the next connection is the only thing that matters.
+            drop(reply::answer(stream, ready, &pacing));
+        });
     }
     ExitCode::SUCCESS
 }
@@ -79,6 +104,10 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut ready_after = Duration::ZERO;
     let mut exit_after = None;
     let mut exit_code = 0u8;
+    let mut events = 3usize;
+    let mut gap = Duration::ZERO;
+    let mut die_after = None;
+    let mut hangup_marker = None;
 
     let mut args = args;
     while let Some(argument) = args.next() {
@@ -96,6 +125,10 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
                 exit_after = Some(Duration::from_millis(number(&value()?, "--exit-after")?));
             }
             "--exit-code" => exit_code = number(&value()?, "--exit-code")?,
+            "--stream-events" => events = number(&value()?, "--stream-events")?,
+            "--stream-gap" => gap = Duration::from_millis(number(&value()?, "--stream-gap")?),
+            "--die-after-events" => die_after = Some(number(&value()?, "--die-after-events")?),
+            "--hangup-marker" => hangup_marker = Some(PathBuf::from(value()?)),
             _ => {}
         }
     }
@@ -105,6 +138,12 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
         ready_after,
         exit_after,
         exit_code,
+        pacing: Pacing {
+            events,
+            gap,
+            die_after,
+            hangup_marker,
+        },
     })
 }
 
@@ -112,30 +151,4 @@ fn number<T: std::str::FromStr>(value: &str, flag: &str) -> Result<T, String> {
     value
         .parse()
         .map_err(|_| format!("{flag} takes a number, not '{value}'"))
-}
-
-/// Answers one request. `/health` carries the readiness contract; everything
-/// else is a path this stub does not serve.
-fn answer(mut stream: TcpStream, ready: bool) -> std::io::Result<()> {
-    let mut line = String::new();
-    BufReader::new(stream.try_clone()?).read_line(&mut line)?;
-
-    let health = line.starts_with("GET /health ");
-    let (status, body) = match (health, ready) {
-        (true, true) => ("200 OK", "{\"status\":\"ok\"}"),
-        (true, false) => ("503 Service Unavailable", "{\"status\":\"loading\"}"),
-        (false, _) => ("404 Not Found", "{\"error\":\"not found\"}"),
-    };
-
-    write!(
-        stream,
-        "HTTP/1.1 {status}\r\n\
-         Content-Type: application/json\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n\
-         {body}",
-        body.len()
-    )?;
-    stream.flush()
 }

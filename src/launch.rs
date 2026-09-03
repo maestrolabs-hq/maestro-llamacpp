@@ -36,15 +36,31 @@ pub use server::Server;
 
 /// Why a server could not be located, started, or resolved.
 ///
-/// One string rather than a set of variants: nothing chooses a branch on the
-/// kind of failure, it is printed and the command exits. A variant per cause
-/// would be a promise to a caller that does not exist.
+/// Slice 2 carried this as one opaque string, on the grounds that nothing
+/// chose a branch on the kind of failure: it was printed and the command
+/// exited. That was true of the only caller it had.
+///
+/// The proxy is the second caller and it does branch. A child that missed its
+/// startup budget is a gateway timeout, and a child that could never start is
+/// a bad gateway, so the difference has to survive the trip out of this
+/// module. Two variants rather than one per cause: these are the two the
+/// status mapping distinguishes, and a variant nothing reads would be the
+/// speculative promise the original comment was right to refuse.
+///
+/// Matching on the message text was the alternative, and it is worse: it makes
+/// the wording of an error a load-bearing interface that no test guards.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Failure(String);
+pub enum Failure {
+    /// A child started, and did not answer inside the entry's startup budget.
+    NotReady(String),
+    /// A server could not be located, or a child could not be started at all.
+    Unavailable(String),
+}
 
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        let (Self::NotReady(message) | Self::Unavailable(message)) = self;
+        write!(f, "{message}")
     }
 }
 

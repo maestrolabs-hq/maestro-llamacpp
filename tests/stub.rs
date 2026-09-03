@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::process::{Child, Command};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A port the operating system says is free. The window before the stub binds
 /// it is a race this repository accepts and records rather than hiding; a test
@@ -154,5 +154,126 @@ fn exit_after_exits_with_the_requested_code() {
         status.code(),
         Some(9),
         "the exit code a test asked for, so a crash during loading can be driven"
+    );
+}
+
+/// Sends one request and records when each chunk of the reply arrived.
+///
+/// The arrival times are the point: a stub that buffered its own output would
+/// deliver every event at once, which would make the router's streaming test
+/// agree with a broken relay.
+fn arrivals(port: u16, request_line: &str) -> (String, Vec<Duration>) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("a read timeout, so a hang fails rather than blocks");
+    write!(
+        stream,
+        "{request_line} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .expect("write");
+    stream.shutdown(Shutdown::Write).expect("shutdown");
+
+    let started = Instant::now();
+    let mut body = String::new();
+    let mut times = Vec::new();
+    let mut buffer = [0u8; 1024];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => {
+                times.push(started.elapsed());
+                body.push_str(&String::from_utf8_lossy(&buffer[..read]));
+            }
+        }
+    }
+    (body, times)
+}
+
+#[test]
+fn a_paced_stream_arrives_spread_out_rather_than_at_once() {
+    let port = free_port();
+    let _running = start(&[
+        "--port",
+        &port.to_string(),
+        "--stream-events",
+        "5",
+        "--stream-gap",
+        "100",
+    ]);
+    wait_for_listener(port);
+
+    let (body, times) = arrivals(port, "POST /v1/chat/completions");
+
+    assert!(
+        body.contains("data: {\"n\":0}") && body.contains("data: {\"n\":4}"),
+        "every event arrives:\n{body}"
+    );
+    let first = *times.first().expect("at least one arrival");
+    let last = *times.last().expect("at least one arrival");
+    assert!(
+        last.saturating_sub(first) >= Duration::from_millis(250),
+        "five events paced 100ms apart spread over at least half their \
+         production time; arrivals were {times:?}"
+    );
+}
+
+#[test]
+fn die_after_events_truncates_the_stream() {
+    let port = free_port();
+    let _running = start(&[
+        "--port",
+        &port.to_string(),
+        "--stream-events",
+        "10",
+        "--stream-gap",
+        "20",
+        "--die-after-events",
+        "2",
+    ]);
+    wait_for_listener(port);
+
+    let (body, _) = arrivals(port, "POST /v1/chat/completions");
+
+    assert!(
+        body.contains("data: {\"n\":1}"),
+        "the events before the death arrive:\n{body}"
+    );
+    assert!(
+        !body.contains("data: {\"n\":2}"),
+        "and nothing after it does:\n{body}"
+    );
+}
+
+#[test]
+fn echo_reflects_the_request_line_and_every_header() {
+    let port = free_port();
+    let _running = start(&["--port", &port.to_string()]);
+    wait_for_listener(port);
+
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("a read timeout");
+    stream
+        .write_all(
+            b"GET /v1/echo HTTP/1.1\r\n\
+              Host: localhost\r\n\
+              X-Written-By: the test\r\n\
+              Connection: close\r\n\r\n",
+        )
+        .expect("write");
+    stream.shutdown(Shutdown::Write).expect("shutdown");
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).expect("read");
+
+    assert!(reply.starts_with("HTTP/1.1 200 "), "echo answers:\n{reply}");
+    assert!(
+        reply.contains("GET /v1/echo HTTP/1.1"),
+        "the request line comes back:\n{reply}"
+    );
+    assert!(
+        reply.contains("X-Written-By: the test"),
+        "and every header with it:\n{reply}"
     );
 }

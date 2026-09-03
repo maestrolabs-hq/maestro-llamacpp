@@ -10,15 +10,21 @@
 //! the same gates as a real one.
 
 use std::fs;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;
 
 use maestro_llamacpp::catalog::Catalog;
 use maestro_llamacpp::launch::{Server, models_root};
+use maestro_llamacpp::proxy::Router;
 
 const USAGE: &str = "usage: model-router check <catalog>\n       \
-                     model-router launch <catalog> <model>";
+                     model-router launch <catalog> <model>\n       \
+                     model-router serve <catalog> [address]";
+
+/// The one public port the design names.
+const DEFAULT_ADDRESS: &str = "127.0.0.1:8080";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -31,11 +37,58 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        [command, catalog] if command == "serve" => report(serve(Path::new(catalog), None)),
+        [command, catalog, address] if command == "serve" => {
+            report(serve(Path::new(catalog), Some(address)))
+        }
         _ => {
             eprintln!("{USAGE}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Whatever a command had to say when it could not do its work.
+fn report(outcome: Result<(), String>) -> ExitCode {
+    match outcome {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(complaint) => {
+            eprintln!("{complaint}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Serves every entry in the catalog on its own dedicated endpoint.
+///
+/// Long-running by design, unlike `launch`: now there is something to serve.
+/// It returns only when the process is ended.
+fn serve(catalog: &Path, address: Option<&str>) -> Result<(), String> {
+    let parsed = read(catalog)?;
+    let root = models_root().map_err(|failure| failure.to_string())?;
+    let server = Server::located(None).map_err(|failure| failure.to_string())?;
+
+    let wanted = address.unwrap_or(DEFAULT_ADDRESS);
+    let wanted: SocketAddr = wanted
+        .parse()
+        .map_err(|error| format!("'{wanted}' is not an address to bind: {error}"))?;
+
+    let router = Router::bind(wanted, parsed, root, server).map_err(|f| f.to_string())?;
+    let bound = router.address();
+    println!("serving on http://{bound}");
+    println!("  http://{bound}/models/<model>/v1/chat/completions");
+    println!("a streamed reply is passed through as it arrives");
+
+    router.serve();
+    Ok(())
+}
+
+/// One usable catalog, or why it is not.
+fn read(catalog: &Path) -> Result<Catalog, String> {
+    let text = fs::read_to_string(catalog)
+        .map_err(|error| format!("cannot read {}: {error}", catalog.display()))?;
+    Catalog::parse(&text)
+        .map_err(|report| format!("{} is not usable:\n{report}", catalog.display()))
 }
 
 /// Starts one entry, proves it answers, and stops it again.
@@ -46,10 +99,7 @@ fn main() -> ExitCode {
 /// slice can honestly claim, and it doubles as the manual check against a real
 /// `llama-server`.
 fn launch(catalog: &Path, id: &str) -> Result<(), String> {
-    let text = fs::read_to_string(catalog)
-        .map_err(|error| format!("cannot read {}: {error}", catalog.display()))?;
-    let parsed = Catalog::parse(&text)
-        .map_err(|report| format!("{} is not usable:\n{report}", catalog.display()))?;
+    let parsed = read(catalog)?;
     let entry = parsed
         .entry(id)
         .ok_or_else(|| format!("{} carries no model called '{id}'", catalog.display()))?;

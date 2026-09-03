@@ -42,6 +42,27 @@ const ACCEPTED: &[(&str, &str)] = &[
          missing models table is a problem the catalog is refused for.",
     ),
     (
+        "stop <-> serve",
+        "Two short methods on Router whose whole body is one chain on self, \
+         which is the only thing they share. One takes a lock and empties a \
+         map; the other loops on a listener and spawns a thread per \
+         connection. There is no common operation to factor out -- only a \
+         common shape -- and a helper that took the difference as a parameter \
+         would be longer than both and named after neither.",
+    ),
+    (
+        "an_entry_whose_child_never_becomes_ready_is_a_gateway_timeout \
+         <-> an_entry_whose_child_cannot_start_is_a_bad_gateway",
+        "Both assert one refusal: the status it carries, and that its message \
+         names the entry. That shared shape is the contract -- every refusal \
+         names what it was about -- rather than duplication to remove. \
+         Merging them would mean one test taking a catalog and a status as \
+         parameters, which reads as data and stops naming the two causes the \
+         router must tell apart. Those two causes are exactly what \
+         launch::Failure's variants exist to distinguish, so a merged test \
+         would leave the distinction with no test of its own.",
+    ),
+    (
         "start <-> spawn",
         "start is spawn plus the readiness loop, and delegates to it -- the \
          same relationship as optional and required above. What they share is \

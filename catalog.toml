@@ -46,7 +46,9 @@
 #                       there, was refused 502 naming the path -- and gemma3
 #                       kept the same process and went on answering. Before
 #                       the fix its room would have been taken for a start
-#                       that could never have happened
+#                       that could never have happened. That entry is now
+#                       qwen3-4b and points at a file that is there, so the
+#                       case above is history rather than the current state
 #   GET /v1/models/x    411, naming the header it wanted
 #   bad Content-Length  400, quoting back what arrived
 #
@@ -138,12 +140,24 @@ kv-unified = "true"
 
 # The resident entry. Held loaded so a caller that asks constantly never waits
 # for a load, which is the whole reason residency exists.
-[models.qwen3-06b]
-path = "llm/qwen/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf"
+#
+# The weights are 2382 MiB on disk and the estimate covers context on top of
+# them. It is stated rather than left to the defaults table even though the two
+# agree today: a resident's cost is load-bearing for every admission decision
+# the router will ever make, and a figure that has to be read out of a defaults
+# table to be known is a figure that will be got wrong.
+#
+# n-gpu-layers is inherited, which puts this on the video device beside the
+# large entries rather than on the processor away from them. Named here rather
+# than left silent, because it is what makes the reservation compete with
+# qwen38 for the same memory. Whether that is the right side is measured, not
+# guessed, and moving it is one line here rather than a change to the code.
+[models.qwen3-4b]
+path = "llm/qwen/qwen3-4b/Qwen3-4B-Q4_K_M.gguf"
 residency = "resident"
-memory_estimate_mib = 1024
+memory_estimate_mib = 4096
 
-[models.qwen3-06b.flags]
+[models.qwen3-4b.flags]
 fa = "on"
 np = "1"
 kv-unified = "true"

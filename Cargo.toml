@@ -15,6 +15,9 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 description = "Router that supervises llama.cpp server processes and serves one endpoint per model"
+# The second binary made `cargo run` ambiguous. This names the shipped one, so
+# the commands in README.md work as written.
+default-run = "model-router"
 
 # The interface the tests link against. It carries the catalog and nothing
 # else: the library seam exists for that one consumer, and widening it would
@@ -26,6 +29,19 @@ path = "src/lib.rs"
 [[bin]]
 name = "model-router"
 path = "src/main.rs"
+
+# The second adapter at the supervision seam: a server that speaks the health
+# contract without a model behind it, so continuous integration supervises a
+# real process on every platform leg.
+#
+# Not behind a feature. The fast tier runs `cargo test --all-targets` without
+# `--all-features`, so a feature-gated stub would be skipped in continuous
+# integration while the run reported green -- the failure `tests/duplication.rs`
+# warns about in its own words. It is built by the tests and never released:
+# the shared release workflow takes the name of one binary.
+[[bin]]
+name = "stub-llama-server"
+path = "src/bin/stub_llama_server.rs"
 
 # A hand-written parser for a format with nested tables and optional fields is
 # more code than this one, and wrong in ways that surface at run time.

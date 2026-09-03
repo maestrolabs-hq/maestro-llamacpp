@@ -106,6 +106,14 @@ pub struct Entry {
     pub reasoning_format: Option<String>,
     /// How much reasoning effort to ask for, when the model accepts a level.
     pub reasoning_effort: Option<String>,
+    /// How long this model may take to become ready before the router gives up
+    /// on it and says so.
+    ///
+    /// Per entry rather than global because startup time varies by two orders
+    /// of magnitude: a small model answers in under a second, a large one on a
+    /// cold page cache takes minutes. One value would be either too tight for
+    /// the large entries or meaningless for the small ones.
+    pub startup_timeout_seconds: u32,
     /// Server settings this router passes through without interpreting.
     pub flags: BTreeMap<String, String>,
 }

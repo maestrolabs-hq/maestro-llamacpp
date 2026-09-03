@@ -55,8 +55,35 @@ it, and the effort level requested. Only models that reason carry either.
 What loading an entry is expected to cost. An estimate, used to decide what
 fits, never a measurement.
 
+**Startup budget**:
+How long a model may take to become ready before the router gives up on it and
+says so. Per entry, because a small model answers in under a second and a
+large one on a cold page cache takes minutes.
+_Avoid_: timeout, deadline.
+
 **Models root**:
 The directory catalog locations resolve against, supplied at run time. Its
 existence is why every location in a catalog is relative, and why one catalog
 is correct on every machine.
 _Avoid_: model directory, weights path.
+
+**Server binary**:
+The `llama-server` executable the router runs. Located, never bundled: a
+configured path if there is one, otherwise the first match on the search path.
+
+**Child**:
+One running server process, serving exactly one catalog entry on one loopback
+port.
+_Avoid_: instance, worker, backend.
+
+**Invocation**:
+The command line an entry becomes. Named because parity with the current
+router is asserted against it directly.
+_Avoid_: arguments, command.
+
+**Readiness**:
+Whether a child has finished loading and will answer. Distinct from liveness.
+
+**Liveness**:
+Whether a child process still exists. A child can be alive and not ready for
+several minutes.

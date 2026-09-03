@@ -25,6 +25,7 @@ const ENTRY_FIELDS: &[&str] = &[
     "memory_estimate_mib",
     "reasoning_format",
     "reasoning_effort",
+    "startup_timeout_seconds",
     "flags",
 ];
 
@@ -36,8 +37,16 @@ const DEFAULT_FIELDS: &[&str] = &[
     "memory_estimate_mib",
     "reasoning_format",
     "reasoning_effort",
+    "startup_timeout_seconds",
     "flags",
 ];
+
+/// The budget an entry gets when neither it nor the defaults table names one.
+///
+/// Generous rather than tight, on purpose: a budget that expires on a healthy
+/// model teaches people to raise it without reading it, and then it protects
+/// nothing.
+const DEFAULT_STARTUP_TIMEOUT_SECONDS: u32 = 300;
 
 /// How the defaults table is named in its own problems.
 const DEFAULTS: &str = "catalog defaults";
@@ -50,6 +59,7 @@ pub(super) struct Defaults {
     memory_estimate_mib: Option<u32>,
     reasoning_format: Option<String>,
     reasoning_effort: Option<String>,
+    startup_timeout_seconds: Option<u32>,
     flags: BTreeMap<String, String>,
 }
 
@@ -75,6 +85,13 @@ pub(super) fn defaults(table: &Table, problems: &mut Vec<String>) -> Defaults {
         ),
         reasoning_format: optional(inner, DEFAULTS, "reasoning_format", problems, as_text),
         reasoning_effort: optional(inner, DEFAULTS, "reasoning_effort", problems, as_text),
+        startup_timeout_seconds: optional(
+            inner,
+            DEFAULTS,
+            "startup_timeout_seconds",
+            problems,
+            as_positive,
+        ),
         flags: flags(inner, DEFAULTS, problems),
     }
 }
@@ -144,6 +161,15 @@ fn entry(
         .or_else(|| defaults.reasoning_format.clone());
     let reasoning_effort = optional(table, &scope, "reasoning_effort", problems, as_text)
         .or_else(|| defaults.reasoning_effort.clone());
+    let startup_timeout_seconds = optional(
+        table,
+        &scope,
+        "startup_timeout_seconds",
+        problems,
+        as_positive,
+    )
+    .or(defaults.startup_timeout_seconds)
+    .unwrap_or(DEFAULT_STARTUP_TIMEOUT_SECONDS);
 
     Some(Entry {
         id: id.to_owned(),
@@ -155,6 +181,7 @@ fn entry(
         memory_estimate_mib: memory_estimate_mib?,
         reasoning_format,
         reasoning_effort,
+        startup_timeout_seconds,
         flags: merged,
     })
 }

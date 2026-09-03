@@ -98,6 +98,24 @@ The rejected alternatives, and why:
   not hard. Forwarding to a loopback child is one connection and one write;
   the difficulty is entirely in not interfering with the response.
 
+One caveat on the scope of that measurement, since the table above invites the
+assumption that every alternative was run: only `tiny_http` was. `hyper`, and
+`axum` which is built on it, were ruled out on judgement rather than data, and
+the judgement is recorded here so that a later reader can disagree with it on
+the same terms. Both bring an asynchronous runtime that nothing else in this
+crate needs -- slice 2's supervision is blocking and threaded throughout -- so
+adopting either means rewriting work that is already landed and green in order
+to serve one endpoint on loopback. Nor would a benchmark have settled it. Both
+stream correctly when driven correctly, so the contest they would win is the
+one this plan already treats as the wrong question. The point of the byte copy
+is not that it streams faster; it is that a proxy which never parses a
+response has no buffering behaviour to configure, to verify, or to regress. A
+larger framework does not strengthen a correctness-by-construction argument,
+it exchanges it for a correctness-by-configuration one. If a later slice needs
+what those frameworks are genuinely for -- connection reuse, concurrency
+limits, backpressure -- that is the slice to pay for the runtime, and to take
+the benchmark with it.
+
 ## The seam, and why the stub still holds
 
 The seam is where slice 2 put it: an executable that speaks the server

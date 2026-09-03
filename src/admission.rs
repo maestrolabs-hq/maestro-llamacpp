@@ -29,8 +29,14 @@
 use std::time::Instant;
 
 use crate::catalog::Residency;
+use crate::launch::Failure;
+
+/// Where the memory budget is configured. The estate prefix keeps it
+/// recognisable beside the other variables a machine carries.
+const VARIABLE: &str = "MAESTRO_MEMORY_BUDGET_MIB";
 
 /// What the router may hold models in at once.
+#[derive(Debug)]
 pub struct Budget {
     /// The ceiling in mebibytes, or `None` when none was configured.
     limit_mib: Option<u32>,
@@ -70,6 +76,46 @@ impl Budget {
     #[must_use]
     pub fn new(limit_mib: Option<u32>) -> Self {
         Self { limit_mib }
+    }
+
+    /// The budget this machine is configured with.
+    ///
+    /// The variable when it carries a number, and no budget at all when it is
+    /// unset or empty. A budget is a fact about one machine's hardware, which
+    /// is why it is read here rather than written into a catalog: the catalog
+    /// describes a set of models without naming the machine they sit on.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`Failure`] when the variable carries something that is not a
+    /// number. A budget someone tried to set and mistyped must not silently
+    /// become no budget at all, because the difference is whether anything is
+    /// ever evicted.
+    pub fn configured() -> Result<Self, Failure> {
+        // An empty value is treated as unset, as the models root is: a bare
+        // `export MAESTRO_MEMORY_BUDGET_MIB=` is a plausible slip, and reading
+        // it as a budget of nothing would refuse every model on the machine.
+        let Some(value) = std::env::var_os(VARIABLE).filter(|value| !value.is_empty()) else {
+            return Ok(Self::new(None));
+        };
+
+        let text = value.to_string_lossy();
+        let limit = text.trim().parse().map_err(|_| {
+            Failure::Unavailable(format!(
+                "{VARIABLE} carries '{text}', which is not a number of \
+                 mebibytes; unset it for no budget, or give it a whole number"
+            ))
+        })?;
+        Ok(Self::new(Some(limit)))
+    }
+
+    /// The ceiling, or `None` when no budget is configured.
+    ///
+    /// Read by the command that starts the router, which says at startup
+    /// whether anything will ever be evicted.
+    #[must_use]
+    pub fn limit_mib(&self) -> Option<u32> {
+        self.limit_mib
     }
 
     /// Whether the wanted entry may be loaded, and what must go first.

@@ -63,6 +63,18 @@ const ACCEPTED: &[(&str, &str)] = &[
          would leave the distinction with no test of its own.",
     ),
     (
+        "a_resident_entry_is_never_unloaded <-> a_busy_entry_is_never_unloaded",
+        "Two protection rules, one shape: a protected entry is held beside an \
+         idle one, and the idle one goes. The shared arrangement was factored \
+         into with_one_protected, which is what each test now calls; what \
+         remains is a single assertion whose structure cannot differ, because \
+         the rules differ only in which field makes an entry protected. \
+         Merging them would take that field as a parameter and stop naming \
+         residency and busyness as the two separate reasons a model is never \
+         a candidate -- and those two reasons are the whole of the policy \
+         this module exists to keep.",
+    ),
+    (
         "start <-> spawn",
         "start is spawn plus the readiness loop, and delegates to it -- the \
          same relationship as optional and required above. What they share is \

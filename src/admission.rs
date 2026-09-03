@@ -33,11 +33,6 @@ use crate::catalog::Residency;
 /// What the router may hold models in at once.
 pub struct Budget {
     /// The ceiling in mebibytes, or `None` when none was configured.
-    ///
-    // Read by `admit`, which is `todo!()` until the green commit. `expect`
-    // rather than `allow` so this fails to compile once the policy reads it,
-    // which is what removes the scaffolding rather than leaving it behind.
-    #[expect(dead_code, reason = "read by the policy in the green commit")]
     limit_mib: Option<u32>,
 }
 
@@ -82,10 +77,93 @@ impl Budget {
     /// Returns [`Decision::Fits`] when there is room already, including when
     /// the entry is loaded, [`Decision::Unload`] naming what to unload coldest
     /// first, or [`Decision::Refuse`] carrying what is holding the memory.
+    ///
+    /// The ceiling is inclusive: holding exactly the budget is within it.
     #[must_use]
-    pub fn admit(&self, _loaded: &[Loaded], _wanted_id: &str, _wanted_mib: u32) -> Decision {
-        todo!("the policy is written in the green commit")
+    pub fn admit(&self, loaded: &[Loaded], wanted_id: &str, wanted_mib: u32) -> Decision {
+        let Some(limit) = self.limit_mib else {
+            return Decision::Fits;
+        };
+
+        // Already loaded, so serving it costs nothing new. Checked before the
+        // budget, because a request for a model that is running must not be
+        // refused by arithmetic about loading it again.
+        if loaded.iter().any(|held| held.id == wanted_id) {
+            return Decision::Fits;
+        }
+
+        if wanted_mib > limit {
+            return Decision::Refuse(format!(
+                "'{wanted_id}' is estimated at {wanted_mib} MiB, which is more \
+                 than the whole budget of {limit} MiB; nothing can be unloaded \
+                 to make it fit"
+            ));
+        }
+
+        // Widened because a sum of estimates can exceed what one of them fits
+        // in, and an overflow here would decide that everything fits.
+        let limit = u64::from(limit);
+        let wanted = u64::from(wanted_mib);
+        let held: u64 = loaded
+            .iter()
+            .map(|entry| u64::from(entry.memory_estimate_mib))
+            .sum();
+
+        if held + wanted <= limit {
+            return Decision::Fits;
+        }
+
+        // On-demand, idle, and not the entry being asked for. A resident
+        // entry is never a candidate, and neither is one being read from.
+        let mut candidates: Vec<&Loaded> = loaded
+            .iter()
+            .filter(|entry| {
+                entry.residency == Residency::OnDemand && !entry.busy && entry.id != wanted_id
+            })
+            .collect();
+        candidates.sort_by_key(|entry| entry.last_used);
+
+        let mut freed = 0u64;
+        let mut unload = Vec::new();
+        for candidate in candidates {
+            if held.saturating_sub(freed) + wanted <= limit {
+                break;
+            }
+            freed += u64::from(candidate.memory_estimate_mib);
+            unload.push(candidate.id.clone());
+        }
+
+        if held.saturating_sub(freed) + wanted <= limit {
+            return Decision::Unload(unload);
+        }
+
+        Decision::Refuse(format!(
+            "'{wanted_id}' needs {wanted_mib} MiB and the budget of {limit} MiB \
+             is held by: {}",
+            holders(loaded)
+        ))
     }
+}
+
+/// What is holding the memory, and why each one is staying.
+///
+/// A refusal a caller can act on has to say which entries are in the way and
+/// which of those could never move, so the reader knows whether to retry or
+/// to change the catalog.
+fn holders(loaded: &[Loaded]) -> String {
+    loaded
+        .iter()
+        .map(|entry| {
+            let (id, mib) = (&entry.id, entry.memory_estimate_mib);
+            let why = match (entry.residency, entry.busy) {
+                (_, true) => ", busy",
+                (Residency::Resident, _) => ", resident",
+                (Residency::OnDemand, false) => "",
+            };
+            format!("{id} ({mib} MiB{why})")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -111,6 +189,19 @@ mod tests {
 
     fn on_demand(id: &str, mib: u32, age: u64) -> Loaded {
         loaded(id, mib, Residency::OnDemand, false, age)
+    }
+
+    /// Both protection rules have one shape: a protected entry is held beside
+    /// an idle on-demand one, and something is wanted that needs the room.
+    ///
+    /// Shared because the rules differ only in what makes an entry protected,
+    /// and writing the arrangement twice said that twice without saying why.
+    /// The protected entry is deliberately the larger and the colder, so a
+    /// policy that ignored the rule would take it and the case would fail.
+    fn with_one_protected(protected: Loaded) -> Decision {
+        let budget = Budget::new(Some(10_000));
+        let held = [protected, on_demand("idle", 2_000, 1)];
+        budget.admit(&held, "wanted", 3_000)
     }
 
     #[test]
@@ -155,38 +246,30 @@ mod tests {
             on_demand("c", 3_000, 10),
         ];
 
+        // 9000 held, 5000 wanted, 10000 allowed. Unloading the coldest alone
+        // leaves 11000, which is over; unloading two leaves 8000, which is
+        // not. The third stays loaded because nothing needs its room.
         assert_eq!(
-            budget.admit(&held, "d", 4_000),
+            budget.admit(&held, "d", 5_000),
             Decision::Unload(vec!["a".to_owned(), "b".to_owned()]),
-            "two make room for 4000 within 10000; the third stays loaded"
+            "two make room for 5000 within 10000; the third stays loaded"
         );
     }
 
     #[test]
     fn a_resident_entry_is_never_unloaded() {
-        let budget = Budget::new(Some(10_000));
-        let held = [
-            loaded("small", 6_000, Residency::Resident, false, 100),
-            on_demand("big", 2_000, 1),
-        ];
-
         assert_eq!(
-            budget.admit(&held, "wanted", 3_000),
-            Decision::Unload(vec!["big".to_owned()]),
-            "the resident entry is older and would fit, and is still not a candidate"
+            with_one_protected(loaded("pinned", 6_000, Residency::Resident, false, 100)),
+            Decision::Unload(vec!["idle".to_owned()]),
+            "the resident entry is colder and would free enough on its own, \
+             and is still not a candidate"
         );
     }
 
     #[test]
     fn a_busy_entry_is_never_unloaded() {
-        let budget = Budget::new(Some(10_000));
-        let held = [
-            loaded("busy", 6_000, Residency::OnDemand, true, 100),
-            on_demand("idle", 2_000, 1),
-        ];
-
         assert_eq!(
-            budget.admit(&held, "wanted", 3_000),
+            with_one_protected(loaded("reading", 6_000, Residency::OnDemand, true, 100)),
             Decision::Unload(vec!["idle".to_owned()]),
             "the busy entry is coldest and on-demand, and is still not a candidate"
         );

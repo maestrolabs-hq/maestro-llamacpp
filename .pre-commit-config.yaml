@@ -1,0 +1,80 @@
+# Hook configuration, run by prek (https://github.com/j178/prek) -- the Rust
+# implementation of the pre-commit protocol, so linting Rust needs no Python.
+# Enable with: prek install --install-hooks (done by `just setup`).
+#
+# Both hook types are declared here rather than passed as install flags, so the
+# plain install command wires the merge gate too: a merge that commits on its
+# own runs pre-merge-commit, not pre-commit, and would otherwise bring in
+# changes no gate ever saw.
+# Cheap checks on every commit, expensive ones before a push.
+#
+# A commit that takes a minute is a commit people learn to make with
+# --no-verify, and that habit then applies to the checks that mattered. So
+# formatting, lint and the secret scan run at commit time, and anything that
+# compiles the test tree waits for the push.
+default_install_hook_types: [pre-commit, pre-push, pre-merge-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/gitleaks/gitleaks
+    # Same engine locally and in CI, so a commit blocked here is blocked there.
+    # Scans the staged diff only; local hooks are not airtight (--no-verify,
+    # rebase and fast-forward merges all bypass them), which is why CI must
+    # scan full history.
+    rev: v8.24.3
+    hooks:
+      - id: gitleaks
+        always_run: true
+
+  - repo: local
+    hooks:
+      # always_run: without it pre-commit skips these whole-project gates on
+      # commits whose staged files match no filter, such as pure deletions.
+      - id: cargo-fmt
+        name: cargo fmt (check only)
+        entry: cargo fmt --all --check
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: cargo-clippy
+        name: cargo clippy (warnings are errors)
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: cargo-test
+        name: cargo test
+        entry: cargo test --all-targets
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: cargo-similarity
+        name: similarity-rs (copy-paste, allowlisted)
+        entry: cargo test --test duplication
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: cargo-machete
+        name: cargo machete (unused dependencies)
+        entry: cargo machete
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: cargo-deny
+        name: cargo deny (advisories, licences, bans, sources)
+        entry: cargo deny check
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

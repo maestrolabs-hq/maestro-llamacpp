@@ -1,0 +1,84 @@
+# Repository-wide file handling.
+#
+# The default below normalises line endings in the repository while letting
+# each checkout use whatever its platform expects. Without it, a Windows
+# contributor's first commit rewrites every file, and the diff is unreviewable.
+
+* text=auto eol=lf
+
+# ── Explicitly text, so a stray byte cannot make git guess "binary" ─────────
+*.rs        text diff=rust
+*.toml      text
+*.json      text
+*.jsonc     text
+*.yml       text
+*.yaml      text
+*.md        text diff=markdown
+*.txt       text
+*.ts        text
+*.tsx       text
+*.mts       text
+*.js        text
+*.mjs       text
+*.cjs       text
+*.py        text diff=python
+*.pyi       text diff=python
+*.sql       text
+*.html      text diff=html
+*.css       text
+*.svg       text
+justfile    text
+Makefile    text
+Dockerfile  text
+*.sh        text eol=lf
+LICENSE     text
+
+# Shell scripts and hooks must keep LF even on Windows: CRLF breaks the
+# shebang line and the error is unreadable.
+*.bash      text eol=lf
+*.zsh       text eol=lf
+
+# Windows-only scripts, conversely, need CRLF.
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# ── Binary, never diffed or merged ──────────────────────────────────────────
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.webp      binary
+*.pdf       binary
+*.zip       binary
+*.gz        binary
+*.tar       binary
+*.woff      binary
+*.woff2     binary
+*.gguf      binary
+*.wasm      binary
+
+# ── Lockfiles ───────────────────────────────────────────────────────────────
+# Generated, and reviewed as a whole rather than line by line. Marking them
+# linguist-generated keeps them out of language statistics and collapses them
+# in pull requests; they are still diffable when someone needs to look.
+Cargo.lock          -diff linguist-generated=true
+package-lock.json   -diff linguist-generated=true
+uv.lock             -diff linguist-generated=true
+poetry.lock         -diff linguist-generated=true
+
+# ── Captured configuration ──────────────────────────────────────────────────
+# Restored byte for byte onto a machine, so it is data rather than source.
+config/**   linguist-vendored=true
+
+# ── Never shipped in an archive ─────────────────────────────────────────────
+# `git archive` and release tarballs carry the code, not the scaffolding.
+.github/            export-ignore
+.editorconfig       export-ignore
+.gitattributes      export-ignore
+.gitignore          export-ignore
+.pre-commit-config.yaml export-ignore
+tests/              export-ignore
+docs/               export-ignore
+justfile            export-ignore

@@ -44,6 +44,7 @@ use crate::catalog::{Catalog, Entry};
 use crate::launch::{Child, Failure, Server};
 
 mod answer;
+mod endpoint;
 mod head;
 mod relay;
 

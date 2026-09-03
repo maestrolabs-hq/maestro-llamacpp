@@ -11,6 +11,7 @@
 use std::io::{BufReader, Write};
 use std::net::TcpStream;
 
+use super::endpoint::Endpoint;
 use super::{Shared, head, relay};
 use crate::launch::Failure;
 
@@ -27,8 +28,19 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
         Err(failure) => return refuse(&mut stream, 404, &failure.to_string()),
     };
 
-    let Some(entry) = shared.catalog.entry(&request.id) else {
-        let id = &request.id;
+    // Only the dedicated shape is served so far. The other two parse, so the
+    // router can tell them apart, and are answered in the task that gives
+    // them behaviour; until then they are refused exactly as before.
+    let Endpoint::Dedicated { id, .. } = &request.endpoint else {
+        return refuse(
+            &mut stream,
+            404,
+            "this router serves /models/<model>/<path>; the generic endpoint \
+             is not served yet",
+        );
+    };
+
+    let Some(entry) = shared.catalog.entry(id) else {
         return refuse(
             &mut stream,
             404,
@@ -42,7 +54,6 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
     // Refused before anything is started, so a request this router will not
     // serve does not cost a model load.
     if request.chunked {
-        let id = &request.id;
         return refuse(
             &mut stream,
             501,

@@ -12,6 +12,7 @@ use std::fmt::Write as _;
 use std::io::{BufRead, Read as _};
 use std::net::SocketAddr;
 
+use super::endpoint::Endpoint;
 use crate::launch::Failure;
 
 /// How many bytes of head the router will read before refusing.
@@ -24,22 +25,16 @@ pub(super) const MAX_HEAD_BYTES: usize = 64 * 1024;
 /// How many header lines the router will accept.
 pub(super) const MAX_HEADERS: usize = 100;
 
-/// The path shape a dedicated endpoint carries.
-const PREFIX: &str = "/models/";
-
 /// A parsed request head.
 ///
-/// The identifier and the suffix are split apart at parse time because every
-/// caller wants them separately: one selects the entry, the other becomes the
-/// path sent upstream.
+/// The endpoint is resolved at parse time because every caller wants it: it
+/// says which model answers, and what the child is asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Head {
     /// The method, passed through unchanged.
     pub(super) method: String,
-    /// The model identifier the path named.
-    pub(super) id: String,
-    /// What the child is asked for, with the prefix and identifier removed.
-    pub(super) suffix: String,
+    /// Which endpoint the path addressed.
+    pub(super) endpoint: Endpoint,
     /// Every header as received, in order.
     pub(super) headers: Vec<(String, String)>,
     /// The declared body length, or zero when there is none.
@@ -98,9 +93,8 @@ fn oversized(reason: &str) -> Failure {
 ///
 /// # Errors
 ///
-/// Returns a [`Failure`] when there is no request line, when the path does
-/// not carry the dedicated-endpoint shape, or when it names an identifier
-/// with nothing after it.
+/// Returns a [`Failure`] when there is no request line, or when the path is
+/// not a shape this router serves.
 pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
     let mut words = lines
         .first()
@@ -114,7 +108,7 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
         .next()
         .ok_or_else(|| malformed("a request line with no path"))?;
 
-    let (id, suffix) = split(path)?;
+    let endpoint = Endpoint::of(path)?;
 
     let mut headers = Vec::new();
     let mut content_length = 0;
@@ -140,32 +134,14 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
 
     Ok(Head {
         method,
-        id,
-        suffix,
+        endpoint,
         headers,
         content_length,
         chunked,
     })
 }
 
-/// The identifier a path names, and what the child is asked for.
-fn split(path: &str) -> Result<(String, String), Failure> {
-    let shape = format!("the shape is {PREFIX}<model>/<path>");
-    let rest = path
-        .strip_prefix(PREFIX)
-        .ok_or_else(|| malformed(&format!("'{path}' is not a dedicated endpoint: {shape}")))?;
-
-    match rest.split_once('/') {
-        Some((id, suffix)) if !id.is_empty() && !suffix.is_empty() => {
-            Ok((id.to_owned(), format!("/{suffix}")))
-        }
-        _ => Err(malformed(&format!(
-            "'{path}' names a model with nothing after it: {shape}"
-        ))),
-    }
-}
-
-/// A request this router does not serve, and the shape of one it does.
+/// A request this router does not serve.
 fn malformed(reason: &str) -> Failure {
     Failure::Unavailable(reason.to_owned())
 }
@@ -179,7 +155,7 @@ impl Head {
     pub(super) fn rewrite(&self, upstream: SocketAddr) -> String {
         let mut text = String::new();
         let method = &self.method;
-        let suffix = &self.suffix;
+        let suffix = self.endpoint.suffix();
         // Writing to a String cannot fail, so this says so once rather than
         // dressing an impossibility up as an error this function returns.
         let infallible = "writing to a String cannot fail";
@@ -225,38 +201,29 @@ mod tests {
     }
 
     #[test]
-    fn a_path_splits_into_an_identifier_and_a_suffix() {
+    fn a_head_carries_the_endpoint_its_path_addressed() {
         let head = head_of("/models/gemma3/v1/chat/completions");
 
-        assert_eq!(head.id, "gemma3", "the segment after the prefix selects");
         assert_eq!(
-            head.suffix, "/v1/chat/completions",
-            "and everything after it is what the child is asked for"
+            head.endpoint,
+            Endpoint::Dedicated {
+                id: "gemma3".to_owned(),
+                suffix: "/v1/chat/completions".to_owned(),
+            },
+            "which shape a path addressed is resolved at parse time"
         );
         assert_eq!(head.method, "POST", "the method is passed through");
     }
 
     #[test]
-    fn a_path_that_does_not_name_models_is_refused() {
-        let refusal = parse(&lines(&["POST /v1/chat/completions HTTP/1.1"]))
-            .expect_err("only the dedicated shape is served in this slice");
+    fn a_path_that_is_no_shape_the_router_serves_is_refused() {
+        let refusal = parse(&lines(&["POST /health HTTP/1.1"]))
+            .expect_err("the router serves two shapes and no others");
 
         assert!(
             refusal.to_string().contains("/models/"),
-            "the refusal says what shape was expected: {refusal}"
+            "the refusal says what shapes were expected: {refusal}"
         );
-    }
-
-    #[test]
-    fn a_path_with_no_suffix_after_the_identifier_is_refused() {
-        for path in ["/models/gemma3", "/models/gemma3/"] {
-            let refusal = parse(&lines(&[&format!("GET {path} HTTP/1.1")]))
-                .expect_err("an identifier with nothing after it asks for nothing");
-            assert!(
-                refusal.to_string().contains("gemma3"),
-                "the refusal names what was asked for: {refusal}"
-            );
-        }
     }
 
     #[test]
@@ -280,7 +247,7 @@ mod tests {
 
     #[test]
     fn a_head_without_a_length_carries_no_body() {
-        assert_eq!(head_of("/models/gemma3/v1/models").content_length, 0);
+        assert_eq!(head_of("/models/gemma3/v1/echo").content_length, 0);
     }
 
     #[test]
@@ -296,7 +263,7 @@ mod tests {
             "detected here so the caller can refuse it rather than mangle a body"
         );
         assert!(
-            !head_of("/models/gemma3/v1/models").chunked,
+            !head_of("/models/gemma3/v1/echo").chunked,
             "and absent when it was not announced"
         );
     }

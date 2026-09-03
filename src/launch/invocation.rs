@@ -40,8 +40,73 @@ use crate::catalog::Entry;
 pub(super) const HOST: &str = "127.0.0.1";
 
 /// The command line for one entry, without the binary that runs it.
-pub(super) fn of(_entry: &Entry, _root: &Path, _port: u16) -> Vec<OsString> {
-    todo!("the translation arrives with the invocation")
+///
+/// The order follows `model_command`: the options first, then the alias, host
+/// and port. Two runs of the same entry produce the same line, because the
+/// flags table is a `BTreeMap` and iterates in key order.
+pub(super) fn of(entry: &Entry, root: &Path, port: u16) -> Vec<OsString> {
+    let mut command = Vec::new();
+
+    push(&mut command, "--model", entry.path.resolve(root));
+    if let Some(draft) = &entry.draft_path {
+        push(&mut command, "--model-draft", draft.resolve(root));
+    }
+    if let Some(projector) = &entry.projector_path {
+        push(&mut command, "--mmproj", projector.resolve(root));
+    }
+    push(&mut command, "--ctx-size", entry.context_size.to_string());
+    if let Some(format) = &entry.reasoning_format {
+        push(&mut command, "--reasoning-format", format.as_str());
+    }
+    if let Some(effort) = &entry.reasoning_effort {
+        push(&mut command, "--reasoning-effort", effort.as_str());
+    }
+
+    for (key, value) in &entry.flags {
+        command.extend(option(key, value));
+    }
+
+    // Last, as the current router sends them. The alias is what makes a reply
+    // name the model the caller asked for rather than the file on disk.
+    push(&mut command, "--alias", entry.id.as_str());
+    push(&mut command, "--host", HOST);
+    push(&mut command, "--port", port.to_string());
+    command
+}
+
+fn push(command: &mut Vec<OsString>, flag: &str, value: impl Into<OsString>) {
+    command.push(OsString::from(flag));
+    command.push(value.into());
+}
+
+/// One setting from the flags table, in the three shapes `_option_arguments`
+/// emits.
+///
+/// The comparison is trimmed and lowercased because the current router does
+/// the same, so a catalog carrying `True` behaves identically in both.
+fn option(key: &str, value: &str) -> Vec<OsString> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" => vec![OsString::from(long_form(key))],
+        // Negation is spelled from the key as written, not from its long
+        // form: the current router builds `--no-{key}` directly. Expanding it
+        // here would send a flag the server has never heard of.
+        "false" => vec![OsString::from(format!("--no-{key}"))],
+        _ => vec![OsString::from(long_form(key)), OsString::from(value)],
+    }
+}
+
+/// The five short forms `SHORT_FLAGS` expands, and the plain spelling for
+/// everything else.
+fn long_form(key: &str) -> String {
+    let long = match key {
+        "c" => "ctx-size",
+        "ctk" => "cache-type-k",
+        "ctv" => "cache-type-v",
+        "fa" => "flash-attn",
+        "np" => "parallel",
+        other => other,
+    };
+    format!("--{long}")
 }
 
 #[cfg(test)]

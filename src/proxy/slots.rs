@@ -108,11 +108,13 @@ impl Slots {
         // Liveness while the lock is held, so a child that exited since it
         // last answered is not handed to a relay that will fail on it.
         //
-        // Checkable only when nothing else holds a reference, which is exactly
-        // when it matters: a child with a relay on it is being read from, so
-        // it is alive and must not be disturbed. `Arc::get_mut` succeeds
-        // precisely in the other case, on the same count the invariant rests
-        // on.
+        // Checkable only when nothing else holds a reference: `try_wait` needs
+        // the process mutably, and `Arc::get_mut` succeeds precisely when the
+        // slot's handle is the only one -- the same count the invariant rests
+        // on. So a child that already has a reader goes unchecked. The count
+        // proves a reader, not a live process, and a child that died under one
+        // is handed on as it is; the relay's own connection is what discovers
+        // that, having no status left to say so with.
         if let Some(child) = Arc::get_mut(&mut held.child)
             && matches!(child.check(), Liveness::Exited(_))
         {

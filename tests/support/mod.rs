@@ -28,8 +28,8 @@ pub fn stub_binary() -> PathBuf {
 
 /// The status code from `GET /health`, or `None` when nothing answered.
 ///
-/// Hand-written because this repository has one dependency and it parses
-/// TOML. One request and one status line do not earn a second.
+/// Hand-written because neither of this repository's two dependencies speaks
+/// HTTP. One request and one status line do not earn a third.
 pub fn health(address: impl ToSocketAddrs) -> Option<u16> {
     let mut stream = TcpStream::connect(address).ok()?;
     stream
@@ -109,9 +109,9 @@ fn connected(address: impl ToSocketAddrs) -> TcpStream {
 
 /// Sends one raw request and reads the whole reply as text.
 ///
-/// Hand-written for the same reason `health` is: this repository has one
-/// dependency and it parses TOML. One request and one reply do not earn a
-/// second.
+/// Hand-written for the same reason `health` is: neither of this repository's
+/// two dependencies speaks HTTP. One request and one reply do not earn a
+/// third.
 pub fn request(address: impl ToSocketAddrs, raw: &str) -> String {
     let mut stream = connected(address);
     stream.write_all(raw.as_bytes()).expect("write");

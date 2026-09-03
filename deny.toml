@@ -1,6 +1,7 @@
 # cargo-deny supersedes cargo-audit: advisories plus licences, bans and sources.
-# The tree is one dependency deep -- a TOML parser and what it pulls in -- so
-# these sections now filter a real tree rather than only guarding an empty one.
+# The tree is two dependencies deep -- a TOML parser and a JSON parser, and
+# what they pull in -- so these sections filter a real tree rather than only
+# guarding an empty one.
 
 [advisories]
 yanked = "deny"

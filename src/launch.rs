@@ -43,7 +43,7 @@ pub use server::Server;
 /// The proxy is the second caller and it does branch. A child that missed its
 /// startup budget is a gateway timeout, and a child that could never start is
 /// a bad gateway, so the difference has to survive the trip out of this
-/// module. Two variants rather than one per cause: these are the two the
+/// module. Three variants rather than one per cause: these are the three the
 /// status mapping distinguishes, and a variant nothing reads would be the
 /// speculative promise the original comment was right to refuse.
 ///

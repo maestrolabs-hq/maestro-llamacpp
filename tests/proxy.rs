@@ -1,4 +1,4 @@
-//! Routing one dedicated endpoint, through the interface a caller holds.
+//! Routing both endpoints, through the interface a caller holds.
 //!
 //! Everything the router does here is real: it binds a port, accepts a
 //! connection, parses a head, starts a child, opens a socket to it and copies

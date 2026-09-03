@@ -53,9 +53,9 @@ gemma3 is ready at http://127.0.0.1:41273 after 1.4 seconds
 gemma3 stopped
 ```
 
-This is deliberately not a long-running command. Staying up until interrupted
-needs a signal handler for no gain in a slice with nothing to serve; launching,
-proving readiness and stopping is the whole of what this slice claims.
+This is deliberately not a long-running command: it proves a child starts and
+answers, then ends it. What `serve` does when it is signalled is a separate
+question, answered under [what eviction never does](#what-eviction-does-and-what-it-never-does).
 
 A child that never becomes ready fails when its startup budget expires, and a
 child that exits while loading fails with its status rather than waiting the
@@ -151,20 +151,52 @@ that a failed start names its entry, not that the estimate is right.
 A model is never unloaded while something is reading from it. Killing a child
 mid-answer would truncate the stream, which a caller cannot tell apart from a
 model that finished early. When the only model that could be unloaded is busy,
-the request is refused instead.
+the request is refused instead. That is checked at the moment a model is taken
+out, not only when the decision is made: a request can arrive in between, and
+emptying the slot then would leave a process running that the budget no longer
+counts.
+
+Nothing is unloaded for a start that could not have happened anyway. A model
+file the models root does not carry is found before the decision, so a stale
+path does not cost the operator a warm model as well as the one they asked
+for. A start that fails only by being attempted -- a startup budget expiring,
+a model costing more than its estimate -- cannot be prevented this way, and
+the room is already gone when it does.
+
+**The router does not survive being signalled, and its children do.** `serve`
+runs until the process ends, so `stop` is never reached: on `SIGTERM` -- what
+`systemctl stop`, `kill` and a container stop all send -- the router dies and
+every `llama-server` it started keeps running and keeps its memory. A terminal
+interrupt is different, because children are left in the process group
+deliberately and `Ctrl-C` reaches them too.
+
+The cost lands on the budget. A restarted router builds its table empty, so it
+counts nothing while the orphans still hold real memory, and it will then
+admit a full budget of models on top of them. Nothing in the process table
+ties a stray server to the router that started it, so after a signalled stop,
+look for them:
+
+```sh
+pgrep -af llama-server
+```
+
+A signal handler needs a dependency and a Windows job object, which is a
+change with its own gates to clear rather than a line to add here.
 
 **A stream is passed through as it arrives.** The router has no HTTP
 dependency: it reads the request head -- the request line and the headers --
-rewrites it, and from there copies bytes in both directions without
-interpreting them. A proxy that re-frames a response is a proxy that can buffer
-it; one that copies bytes cannot, which makes token-by-token delivery a
-property of the design rather than a setting to get right.
+rewrites it, and copies the response back without interpreting a byte of it. A
+proxy that re-frames a response is a proxy that can buffer it; one that copies
+bytes cannot, which makes token-by-token delivery a property of the design
+rather than a setting to get right. The request is the exception, and only on
+the generic endpoint: the model is inside the body, so the body is read. What
+is forwarded is still the caller's own bytes.
 
 A caller that hangs up mid-answer closes the connection to the child, which is
 how `llama-server` is told to stop generating.
 
-Four refusals happen before anything is forwarded, and each names the entry it
-was about:
+Nine refusals happen before anything is forwarded, and each names what it was
+about:
 
 | Cause | Answer |
 | --- | --- |
@@ -174,6 +206,8 @@ was about:
 | the child misses its startup budget | `504`, naming the budget |
 | the body names no model, on the generic endpoint | `400`, saying which endpoint needs none |
 | the body is larger than the router will read | `413`, naming both sizes |
+| the `Content-Length` will not parse | `400`, quoting back what arrived |
+| the generic endpoint is sent no declared body | `411`, naming the header it wanted |
 | nothing can be unloaded to make room | `503`, naming what is holding the memory |
 
 Once a response has begun there is no status left to send, so a failure after

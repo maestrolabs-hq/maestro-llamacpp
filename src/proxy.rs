@@ -1,6 +1,11 @@
-//! Serving one dedicated endpoint per model, and relaying it to a child.
+//! Serving every model in the catalog, and relaying each one to a child.
 //!
-//! What a caller must know to use this correctly is five things.
+//! Two shapes reach the same children. A dedicated endpoint names its model in
+//! the path; the generic one takes it from the request body, which is what an
+//! OpenAI-compatible client already sends. `GET /v1/models` is answered from
+//! the catalog without starting anything.
+//!
+//! What a caller must know to use this correctly is six things.
 //!
 //! [`Router::bind`] reserves the public port and returns immediately. Nothing
 //! is served and no child is started until [`Router::serve`] runs, so a caller
@@ -17,7 +22,14 @@
 //! `serve` is still running -- leaves its children alive after the process
 //! that started them is gone. That was measured, not assumed: forty-five stub
 //! servers outlived the test binaries that started them before this method
-//! existed. A caller that ends without calling it leaves them behind.
+//! existed. A caller that ends without calling it leaves them behind, and a
+//! router ended by a signal never gets the chance to call it at all.
+//!
+//! [`Router::bind`] takes a memory budget, and that is the one argument here
+//! that can end a process. Under a budget, a request for a model that does not
+//! fit unloads the coldest idle one to make room; a model something is reading
+//! from is never chosen, and when the only room is held by one of those the
+//! request is refused instead. Without a budget nothing is ever unloaded.
 //!
 //! The router binds loopback only, as children do. Serving a network is a
 //! security design this repository has not written, and a caller that asks for

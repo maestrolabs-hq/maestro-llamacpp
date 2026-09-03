@@ -447,7 +447,6 @@ A module nothing calls is not a slice.
 - [ ] Add `model-router launch <catalog> <id>`: parse the catalog, locate the
       binary, start that entry, print the endpoint and how long readiness took,
       then stop the child and print that it stopped. Exit zero.
-
       This is deliberately not a long-running command. Staying up until
       interrupted needs a signal handler, and therefore a dependency, for no
       gain in a slice with nothing to serve. Launching, proving readiness and

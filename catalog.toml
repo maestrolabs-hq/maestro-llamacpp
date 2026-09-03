@@ -199,3 +199,17 @@ n-gpu-layers = "0"
 fa = "on"
 np = "1"
 kv-unified = "true"
+
+# Qwen3 0.6B, the laptop-tier candidate for the steward role. Downloaded
+# 2026-09-03 from the official Qwen repository, SHA-256 verified against the
+# publisher's manifest. On the processor like its 4B rival, so the two are
+# measured under identical conditions; the steward correction journal will
+# decide between them on real rounds, not on file size.
+[models.qwen3-06b]
+path = "qwen/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf"
+context_size = 32768
+residency = "on-demand"
+memory_estimate_mib = 1024
+
+[models.qwen3-06b.flags]
+n-gpu-layers = "0"

@@ -10,6 +10,7 @@ version = 1
 context_size = 32768
 residency = "on-demand"
 memory_estimate_mib = 4096
+startup_timeout_seconds = 300
 
 [defaults.flags]
 jinja = "true"
@@ -40,6 +41,7 @@ reasoning_effort = "low"
 [models.gemma3]
 path = "cache/llama.cpp/gemma-3-1b-it-Q4_K_M.gguf"
 memory_estimate_mib = 2048
+startup_timeout_seconds = 60
 
 [models.qwen3-06b]
 path = "llm/qwen/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf"

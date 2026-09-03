@@ -15,10 +15,16 @@ version = 1
 
 # Settings every entry shares. An entry inherits what it does not set, and
 # overrides it by saying so.
+#
+# The startup budget is how long an entry may take to become ready before the
+# router gives up on it. It sits here rather than in the code because startup
+# time varies by two orders of magnitude across these entries, so an entry
+# that loads quickly can carry a tighter one of its own.
 [defaults]
 context_size = 32768
 residency = "on-demand"
 memory_estimate_mib = 4096
+startup_timeout_seconds = 300
 
 [defaults.flags]
 jinja = "true"

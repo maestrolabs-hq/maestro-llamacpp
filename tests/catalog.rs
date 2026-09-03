@@ -68,6 +68,18 @@ fn an_entry_inherits_every_default_it_does_not_set() {
         "the entry overrides the default"
     );
 
+    // Startup time varies by two orders of magnitude, so the budget is a per
+    // entry field: the small model carries a tight one of its own, the large
+    // one inherits the generous default.
+    assert_eq!(
+        gemma.startup_timeout_seconds, 60,
+        "a small model is ready quickly, and the catalog says so"
+    );
+    assert_eq!(
+        qwen.startup_timeout_seconds, 300,
+        "inherited from the defaults table"
+    );
+
     assert_eq!(
         qwen.flags.get("jinja").map(String::as_str),
         Some("true"),

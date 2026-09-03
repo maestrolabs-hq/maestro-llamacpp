@@ -55,6 +55,12 @@ it, and the effort level requested. Only models that reason carry either.
 What loading an entry is expected to cost. An estimate, used to decide what
 fits, never a measurement.
 
+**Startup budget**:
+How long a model may take to become ready before the router gives up on it and
+says so. Per entry, because a small model answers in under a second and a
+large one on a cold page cache takes minutes.
+_Avoid_: timeout, deadline.
+
 **Models root**:
 The directory catalog locations resolve against, supplied at run time. Its
 existence is why every location in a catalog is relative, and why one catalog

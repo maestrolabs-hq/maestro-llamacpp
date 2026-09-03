@@ -35,11 +35,17 @@ path = "src/main.rs"
 # derives: the catalog is walked by hand so each error can name the entry and
 # the field it came from, which a derived deserializer cannot do.
 [dependencies]
-toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
+toml = { version = "1.1", default-features = false, features = [
+    "parse",
+    "serde",
+] }
 
 # Measured, not assumed: the whole pedantic group costs two fixes on this
 # codebase. The lints that make it noisy elsewhere (must_use_candidate,
-# missing_errors_doc) fire on library public APIs, and this is a binary.
+# missing_errors_doc) fire on public library surface, which this crate now has
+# a little of -- so those lints do apply, and the catalog carries the
+# `#[must_use]` and `# Errors` notes they ask for. The surface is small enough
+# that this costs a line or two rather than an argument.
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 too_many_lines = "warn"

@@ -48,7 +48,7 @@
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
 use crate::admission::Budget;
@@ -77,6 +77,13 @@ struct Shared {
     root: PathBuf,
     server: Server,
     slots: Slots,
+    /// Residents the startup loader could not load, as `id: reason`.
+    ///
+    /// Recorded rather than only printed, because the loader runs on a thread
+    /// of its own: what it writes to the output is not reachable from the
+    /// caller that started serving, and "a resident that cannot load says so"
+    /// is a claim that has to be assertable to be a guarantee.
+    resident_failures: Mutex<Vec<String>>,
 }
 
 impl Router {
@@ -112,8 +119,34 @@ impl Router {
                 root,
                 server,
                 slots,
+                resident_failures: Mutex::new(Vec::new()),
             }),
         })
+    }
+
+    /// Which entries hold a child, by identifier, in catalog order.
+    ///
+    /// Names rather than handles, deliberately. Without this, "the resident
+    /// was loaded at startup" cannot be observed at all: any request that
+    /// would reveal the child is also a request that would have started it.
+    /// Why it returns names is in [`Slots::loaded_ids`], and it is the slot
+    /// invariant rather than a preference.
+    #[must_use]
+    pub fn loaded(&self) -> Vec<String> {
+        self.shared.slots.loaded_ids(&self.shared.catalog)
+    }
+
+    /// Residents the startup loader could not load, as `id: reason`.
+    ///
+    /// Empty when every resident loaded, and empty before [`Router::serve`]
+    /// has run: nothing is attempted until there is something to serve.
+    #[must_use]
+    pub fn resident_failures(&self) -> Vec<String> {
+        self.shared
+            .resident_failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Where the router is listening, as the operating system assigned it.

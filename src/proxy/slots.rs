@@ -76,6 +76,29 @@ impl Slots {
         self.admit(catalog, entry, server, root)
     }
 
+    /// The identifiers of the entries holding a child, in catalog order.
+    ///
+    /// Hands out no handle, which is what keeps this clear of the slot
+    /// invariant in [`super::loaded`]. That rule turns on where an `Arc` is
+    /// cloned, and it warns against exactly this: return a reference from
+    /// something that lists what is loaded and `Arc::strong_count` stops
+    /// meaning "somebody is reading from this child", after which eviction
+    /// can empty a slot whose process is still answering. A name carries no
+    /// reference, so this stays clear of the rule rather than depending on it.
+    pub(super) fn loaded_ids(&self, catalog: &Catalog) -> Vec<String> {
+        catalog
+            .entries
+            .iter()
+            .filter(|entry| {
+                self.slot(&entry.id)
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_some()
+            })
+            .map(|entry| entry.id.clone())
+            .collect()
+    }
+
     /// Ends every child, and forgets them.
     pub(super) fn clear(&self) {
         for slot in self.by_id.values() {

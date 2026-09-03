@@ -33,7 +33,7 @@ pub fn models_root() -> Result<PathBuf, Failure> {
     home_directory()
         .map(|home| home.join("models"))
         .ok_or_else(|| {
-            Failure(format!(
+            Failure::Unavailable(format!(
                 "no models root: set {VARIABLE}, or run somewhere with a home \
                  directory this router can read"
             ))

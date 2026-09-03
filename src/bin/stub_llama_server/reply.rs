@@ -12,6 +12,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
@@ -29,6 +30,13 @@ pub struct Pacing {
     pub gap: Duration,
     /// After how many events to hang up without finishing, if at all.
     pub die_after: Option<usize>,
+    /// Where to record that a write failed, if anywhere.
+    ///
+    /// A file rather than a log line, because the router spawns children with
+    /// their output discarded. It is how a test observes that the relay closed
+    /// the upstream connection when its caller went away: without it, "the
+    /// model stopped generating" is a claim nothing outside the stub can see.
+    pub hangup_marker: Option<PathBuf>,
 }
 
 /// Answers one request, and says nothing about the next.
@@ -151,8 +159,15 @@ fn serve_stream(stream: &mut TcpStream, pacing: &Pacing) -> std::io::Result<()> 
 
     for index in 0..pacing.events {
         thread::sleep(pacing.gap);
-        write!(stream, "data: {{\"n\":{index}}}\n\n")?;
-        stream.flush()?;
+        if let Err(error) = write_event(stream, index) {
+            // The far end went away. Recorded where a test can see it, then
+            // reported: this is the observable half of the router closing an
+            // upstream connection whose caller hung up.
+            if let Some(marker) = &pacing.hangup_marker {
+                drop(std::fs::write(marker, b"the caller went away"));
+            }
+            return Err(error);
+        }
         // Dropped without finishing the stream, so a caller sees the response
         // truncate rather than end. This is how a mid-stream upstream death is
         // driven.
@@ -161,4 +176,10 @@ fn serve_stream(stream: &mut TcpStream, pacing: &Pacing) -> std::io::Result<()> 
         }
     }
     Ok(())
+}
+
+/// One event, flushed so it leaves this process when it is produced.
+fn write_event(stream: &mut TcpStream, index: usize) -> std::io::Result<()> {
+    write!(stream, "data: {{\"n\":{index}}}\n\n")?;
+    stream.flush()
 }

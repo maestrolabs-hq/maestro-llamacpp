@@ -42,7 +42,7 @@ impl Server {
                     binary: path.to_path_buf(),
                 })
             } else {
-                Err(Failure(format!(
+                Err(Failure::Unavailable(format!(
                     "the configured server binary is not there: '{}'",
                     path.display()
                 )))
@@ -52,7 +52,7 @@ impl Server {
         on_search_path(BINARY_NAME)
             .map(|binary| Self { binary })
             .ok_or_else(|| {
-                Failure(format!(
+                Failure::Unavailable(format!(
                     "no server binary was configured, and no '{BINARY_NAME}' \
                      was found on the search path"
                 ))
@@ -77,7 +77,7 @@ impl Server {
         let started = Instant::now();
         loop {
             if let Liveness::Exited(status) = child.check() {
-                return Err(Failure(format!(
+                return Err(Failure::Unavailable(format!(
                     "entry '{}': the server exited while loading ({status})",
                     child.id
                 )));
@@ -89,7 +89,7 @@ impl Server {
                 // Killed before reporting, so a failed start leaves nothing
                 // behind holding a port.
                 child.stop();
-                return Err(Failure(format!(
+                return Err(Failure::NotReady(format!(
                     "entry '{}': not ready within its startup budget of {} seconds",
                     child.id, entry.startup_timeout_seconds
                 )));
@@ -104,7 +104,7 @@ impl Server {
         // model rather than as whatever exit status the server chooses for it.
         let model = entry.path.resolve(root);
         if !model.is_file() {
-            return Err(Failure(format!(
+            return Err(Failure::Unavailable(format!(
                 "entry '{}': no model file at '{}'",
                 entry.id,
                 model.display()
@@ -112,7 +112,7 @@ impl Server {
         }
 
         let port = free_port().map_err(|error| {
-            Failure(format!(
+            Failure::Unavailable(format!(
                 "entry '{}': no loopback port was free: {error}",
                 entry.id
             ))
@@ -137,7 +137,7 @@ impl Server {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|error| {
-                Failure(format!(
+                Failure::Unavailable(format!(
                     "entry '{}': the server binary '{}' would not start: {error}",
                     entry.id,
                     self.binary.display()

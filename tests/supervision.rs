@@ -17,7 +17,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use maestro_llamacpp::catalog::{Entry, RelativePath, Residency};
-use maestro_llamacpp::launch::{Liveness, Server};
+use maestro_llamacpp::launch::{Failure, Liveness, Server};
 
 mod support;
 use support::{ModelsRoot, health, stub_binary};
@@ -78,9 +78,15 @@ fn a_child_that_never_becomes_ready_fails_when_its_budget_expires() {
 
     let failure = server()
         .start(&entry, root.path())
-        .expect_err("the budget must expire")
-        .to_string();
+        .expect_err("the budget must expire");
 
+    assert!(
+        matches!(failure, Failure::NotReady(_)),
+        "a child that started and did not answer is distinct from one that \
+         could not start, because the proxy answers them with different \
+         statuses: {failure:?}"
+    );
+    let failure = failure.to_string();
     assert!(
         failure.contains("slowpoke"),
         "the failure names the entry, so the reader is not sent back to the \
@@ -89,6 +95,23 @@ fn a_child_that_never_becomes_ready_fails_when_its_budget_expires() {
     assert!(
         failure.contains('2'),
         "and the budget it exhausted:\n{failure}"
+    );
+}
+
+#[test]
+fn a_child_that_cannot_start_is_distinct_from_one_that_is_slow() {
+    // A root with no files in it, so the entry names a model that is not there
+    // and nothing is ever spawned.
+    let root = ModelsRoot::with(&[]);
+
+    let failure = server()
+        .start(&entry("gemma3"), root.path())
+        .expect_err("the model file is not there");
+
+    assert!(
+        matches!(failure, Failure::Unavailable(_)),
+        "never starting is not the same as starting slowly, and the proxy \
+         maps them to different statuses: {failure:?}"
     );
 }
 

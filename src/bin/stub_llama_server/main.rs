@@ -15,6 +15,7 @@
 //! binary, and that binary is `model-router`.
 
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -81,6 +82,7 @@ fn serve(listener: &TcpListener, options: &Options) -> ExitCode {
             events: options.pacing.events,
             gap: options.pacing.gap,
             die_after: options.pacing.die_after,
+            hangup_marker: options.pacing.hangup_marker.clone(),
         };
         thread::spawn(move || {
             // A failed reply is a client that hung up. Nothing here is
@@ -105,6 +107,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut events = 3usize;
     let mut gap = Duration::ZERO;
     let mut die_after = None;
+    let mut hangup_marker = None;
 
     let mut args = args;
     while let Some(argument) = args.next() {
@@ -125,6 +128,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--stream-events" => events = number(&value()?, "--stream-events")?,
             "--stream-gap" => gap = Duration::from_millis(number(&value()?, "--stream-gap")?),
             "--die-after-events" => die_after = Some(number(&value()?, "--die-after-events")?),
+            "--hangup-marker" => hangup_marker = Some(PathBuf::from(value()?)),
             _ => {}
         }
     }
@@ -138,6 +142,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
             events,
             gap,
             die_after,
+            hangup_marker,
         },
     })
 }

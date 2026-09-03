@@ -81,6 +81,32 @@ The command line an entry becomes. Named because parity with the current
 router is asserted against it directly.
 _Avoid_: arguments, command.
 
+**Dedicated endpoint**:
+The endpoint that serves one named entry, which a request reaches without
+saying which model it wants.
+
+**Generic endpoint**:
+The endpoint shared by every entry, which takes the model from the request
+body. What an OpenAI-compatible client already sends, which is why it exists.
+
+**Memory budget**:
+The ceiling the loaded models are held within. A fact about one machine's
+hardware rather than about a set of models, which is why it is not in the
+catalog. Absent means nothing is ever unloaded.
+
+**Admission**:
+Deciding whether a wanted model may be loaded, and what must be unloaded
+first. A decision about estimates, taken before anything is started.
+
+**Candidate**:
+A loaded model admission may unload: on-demand, and with nothing reading from
+it. A resident model is never one, and neither is a busy one.
+
+**Busy**:
+Whether something is currently reading from a loaded model. What makes a model
+safe from eviction, because unloading one mid-answer truncates a stream the
+caller cannot tell from a finished one.
+
 **Readiness**:
 Whether a child has finished loading and will answer. Distinct from liveness.
 

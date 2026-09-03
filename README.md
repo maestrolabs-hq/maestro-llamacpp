@@ -4,11 +4,13 @@ maestro-llamacpp is the estate's model router. It supervises llama.cpp server
 processes and exposes one OpenAI-compatible endpoint per model plus a generic
 routing endpoint.
 
-Status: the third slice. The router reads and validates a catalog, takes one
+Status: the fourth slice. The router reads and validates a catalog, takes one
 entry from it as far as a running `llama-server` on a loopback port, and serves
-one dedicated endpoint per model, relaying a streamed reply to the caller as it
-arrives. The generic endpoint that routes by the body's model field, residency,
-and eviction arrive with the later slices the design names.
+both a dedicated endpoint per model and a generic endpoint that routes by the
+model a request body names, relaying a streamed reply to the caller as it
+arrives. It holds models within a configured memory budget, unloading an idle
+one to make room for another. Residency arrives with the later slices the
+design names.
 
 ## Checking a catalog
 
@@ -69,6 +71,21 @@ time:
 | `MAESTRO_MODELS_ROOT` | used as given, when set and not empty |
 | otherwise | `models` under the home directory |
 
+### What fits in memory
+
+| Source | Value |
+| --- | --- |
+| `MAESTRO_MEMORY_BUDGET_MIB` | the ceiling in mebibytes, when set and not empty |
+| otherwise | no budget, so nothing is ever unloaded |
+
+A budget is a fact about one machine's hardware, which is why it is read from
+the environment rather than written into a catalog: the catalog describes a set
+of models without naming the machine they sit on. A value that is not a whole
+number is refused rather than read as no budget at all, because the difference
+between those two is whether anything is ever evicted.
+
+The router says which it found at startup.
+
 The server binary is located rather than bundled: `llama-server` is taken from
 the search path, with the platform's executable suffix, so no tracked file
 names one machine.
@@ -84,11 +101,15 @@ Binds the public port and stays up:
 ```text
 serving on http://127.0.0.1:8080
   http://127.0.0.1:8080/models/<model>/v1/chat/completions
+  http://127.0.0.1:8080/v1/chat/completions   (routed by the body's model)
+memory budget: none set, so nothing is ever unloaded (set MAESTRO_MEMORY_BUDGET_MIB)
 a streamed reply is passed through as it arrives
 ```
 
 An address may be given; loopback is enforced, because serving a network is a
 security design this repository has not written.
+
+### Two ways to name a model
 
 Each model is reached at its own endpoint, so a request needs no model field to
 be routed:
@@ -99,9 +120,38 @@ curl --no-buffer http://127.0.0.1:8080/models/gemma3/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"hello"}],"stream":true}'
 ```
 
-A child starts on the first request for its entry and is kept for the router's
-lifetime, so that request pays the startup cost and every later one finds the
-child ready.
+The generic endpoint takes the model from the request body instead, which is
+what an existing OpenAI-compatible client already sends:
+
+```sh
+curl --no-buffer http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gemma3","messages":[{"role":"user","content":"hello"}],"stream":true}'
+```
+
+The path is passed to the child unchanged, and `GET /v1/models` lists the
+catalog's entries without starting anything.
+
+Reading the body costs the response nothing. The router parses the request to
+learn which model answers; the reply is still copied byte for byte, and both
+endpoints deliver a paced stream with the same timing.
+
+A child starts on the first request for its entry and is kept while there is
+room for it, so that request pays the startup cost and every later one finds
+the child ready.
+
+### What eviction does, and what it never does
+
+With a budget set, a model that does not fit causes the coldest idle on-demand
+model to be unloaded first. The budget is a ceiling on the estimates written in
+the catalog, never on measured memory: a model that costs more than its
+estimate is admitted and then fails to load, and what protects against that is
+that a failed start names its entry, not that the estimate is right.
+
+A model is never unloaded while something is reading from it. Killing a child
+mid-answer would truncate the stream, which a caller cannot tell apart from a
+model that finished early. When the only model that could be unloaded is busy,
+the request is refused instead.
 
 **A stream is passed through as it arrives.** The router has no HTTP
 dependency: it reads the request head -- the request line and the headers --
@@ -122,6 +172,9 @@ was about:
 | the request body announces chunked framing | `501`; send a body with a `Content-Length` |
 | the child cannot be started | `502`, with the reason from the launcher |
 | the child misses its startup budget | `504`, naming the budget |
+| the body names no model, on the generic endpoint | `400`, saying which endpoint needs none |
+| the body is larger than the router will read | `413`, naming both sizes |
+| nothing can be unloaded to make room | `503`, naming what is holding the memory |
 
 Once a response has begun there is no status left to send, so a failure after
 that point closes the connection rather than pretending it can still answer.
@@ -136,6 +189,8 @@ that point closes the connection rather than pretending it can still answer.
   -- the second slice.
 - [Dedicated endpoint proxy plan](docs/superpowers/plans/2026-09-03-dedicated-endpoint-proxy.md)
   -- the third slice, and the measurement behind its one hard decision.
+- [Generic endpoint and eviction plan](docs/superpowers/plans/2026-09-03-generic-endpoint-and-eviction.md)
+  -- the fourth slice, and the five design problems it had to settle first.
 - [ADR 0001](docs/adr/0001-one-crate-until-a-seam-is-real.md) -- why this is
   one crate.
 - [AGENTS.md](AGENTS.md) -- how to work in this repository.

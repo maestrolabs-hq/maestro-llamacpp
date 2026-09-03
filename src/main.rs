@@ -75,11 +75,23 @@ fn serve(catalog: &Path, address: Option<&str>) -> Result<(), String> {
         .map_err(|error| format!("'{wanted}' is not an address to bind: {error}"))?;
 
     let budget = Budget::configured().map_err(|failure| failure.to_string())?;
+    // Said at startup rather than left to be discovered: whether anything is
+    // ever evicted is the difference between a router that swaps models and
+    // one that fills memory until a load fails, and an operator who mistyped
+    // the variable would otherwise find out only under load.
+    let budget_line = match budget.limit_mib() {
+        Some(limit) => format!("memory budget: {limit} MiB, so models are unloaded to make room"),
+        None => "memory budget: none set, so nothing is ever unloaded \
+             (set MAESTRO_MEMORY_BUDGET_MIB)"
+            .to_owned(),
+    };
 
     let router = Router::bind(wanted, parsed, root, server, budget).map_err(|f| f.to_string())?;
     let bound = router.address();
     println!("serving on http://{bound}");
     println!("  http://{bound}/models/<model>/v1/chat/completions");
+    println!("  http://{bound}/v1/chat/completions   (routed by the body's model)");
+    println!("{budget_line}");
     println!("a streamed reply is passed through as it arrives");
 
     router.serve();

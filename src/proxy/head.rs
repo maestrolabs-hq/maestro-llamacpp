@@ -8,7 +8,8 @@
 //! the blank line is copied without being read, which is the decision the
 //! whole slice rests on: what the router does not parse, it cannot buffer.
 
-use std::io::BufRead;
+use std::fmt::Write as _;
+use std::io::{BufRead, Read as _};
 use std::net::SocketAddr;
 
 use crate::launch::Failure;
@@ -54,8 +55,43 @@ pub(super) struct Head {
 ///
 /// Returns a [`Failure`] when the head exceeds either bound, or when the
 /// connection ends before a blank line arrives.
-pub(super) fn read(_reader: &mut impl BufRead) -> Result<Vec<String>, Failure> {
-    todo!("Task 3")
+pub(super) fn read(reader: &mut impl BufRead) -> Result<Vec<String>, Failure> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut read = 0usize;
+    loop {
+        let remaining = MAX_HEAD_BYTES.saturating_sub(read);
+        if remaining == 0 {
+            return Err(oversized(&format!("longer than {MAX_HEAD_BYTES} bytes")));
+        }
+
+        // Bounded at the read rather than after it. Checking the length of a
+        // line already in memory would be a limit that allocates whatever it
+        // was given before deciding it was too much.
+        let mut line = String::new();
+        let taken = u64::try_from(remaining).unwrap_or(u64::MAX);
+        let count = (&mut *reader)
+            .take(taken)
+            .read_line(&mut line)
+            .map_err(|error| oversized(&format!("unreadable: {error}")))?;
+        if count == 0 {
+            return Err(oversized("ended before its blank line"));
+        }
+        read += count;
+
+        let trimmed = line.trim_end_matches(['\r', '\n']).to_owned();
+        if trimmed.is_empty() {
+            return Ok(lines);
+        }
+        if lines.len() >= MAX_HEADERS {
+            return Err(oversized(&format!("more than {MAX_HEADERS} lines")));
+        }
+        lines.push(trimmed);
+    }
+}
+
+/// A head the router will not read, and why.
+fn oversized(reason: &str) -> Failure {
+    Failure::Unavailable(format!("the request head is {reason}"))
 }
 
 /// Turns the lines of a head into the parts the router routes on.
@@ -65,8 +101,73 @@ pub(super) fn read(_reader: &mut impl BufRead) -> Result<Vec<String>, Failure> {
 /// Returns a [`Failure`] when there is no request line, when the path does
 /// not carry the dedicated-endpoint shape, or when it names an identifier
 /// with nothing after it.
-pub(super) fn parse(_lines: &[String]) -> Result<Head, Failure> {
-    todo!("Task 3")
+pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
+    let mut words = lines
+        .first()
+        .ok_or_else(|| malformed("a request with no request line"))?
+        .split_whitespace();
+    let method = words
+        .next()
+        .ok_or_else(|| malformed("a request line with no method"))?
+        .to_owned();
+    let path = words
+        .next()
+        .ok_or_else(|| malformed("a request line with no path"))?;
+
+    let (id, suffix) = split(path)?;
+
+    let mut headers = Vec::new();
+    let mut content_length = 0;
+    let mut chunked = false;
+    for line in lines.iter().skip(1) {
+        // A line with no colon is not a header. Skipped rather than refused:
+        // the router is a relay, and inventing a rule the child does not have
+        // would refuse requests the child would have answered.
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let (name, value) = (name.trim(), value.trim());
+        if name.eq_ignore_ascii_case("content-length") {
+            content_length = value.parse().unwrap_or(0);
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding")
+            && value.to_ascii_lowercase().contains("chunked")
+        {
+            chunked = true;
+        }
+        headers.push((name.to_owned(), value.to_owned()));
+    }
+
+    Ok(Head {
+        method,
+        id,
+        suffix,
+        headers,
+        content_length,
+        chunked,
+    })
+}
+
+/// The identifier a path names, and what the child is asked for.
+fn split(path: &str) -> Result<(String, String), Failure> {
+    let shape = format!("the shape is {PREFIX}<model>/<path>");
+    let rest = path
+        .strip_prefix(PREFIX)
+        .ok_or_else(|| malformed(&format!("'{path}' is not a dedicated endpoint: {shape}")))?;
+
+    match rest.split_once('/') {
+        Some((id, suffix)) if !id.is_empty() && !suffix.is_empty() => {
+            Ok((id.to_owned(), format!("/{suffix}")))
+        }
+        _ => Err(malformed(&format!(
+            "'{path}' names a model with nothing after it: {shape}"
+        ))),
+    }
+}
+
+/// A request this router does not serve, and the shape of one it does.
+fn malformed(reason: &str) -> Failure {
+    Failure::Unavailable(reason.to_owned())
 }
 
 impl Head {
@@ -75,15 +176,36 @@ impl Head {
     ///
     /// Every other header is passed through as received. The router is not a
     /// participant in the conversation, only a relay for it.
-    pub(super) fn rewrite(&self, _upstream: SocketAddr) -> String {
-        todo!("Task 3")
+    pub(super) fn rewrite(&self, upstream: SocketAddr) -> String {
+        let mut text = String::new();
+        let method = &self.method;
+        let suffix = &self.suffix;
+        // Writing to a String cannot fail, so this says so once rather than
+        // dressing an impossibility up as an error this function returns.
+        let infallible = "writing to a String cannot fail";
+        write!(text, "{method} {suffix} HTTP/1.1\r\n").expect(infallible);
+        write!(text, "Host: {upstream}\r\n").expect(infallible);
+        text.push_str("Connection: close\r\n");
+
+        for (name, value) in &self.headers {
+            // The caller's Host named the router, and its Connection was about
+            // the router's connection. Both have been answered above with the
+            // child's, so passing the originals through would send the child
+            // two of each.
+            if name.eq_ignore_ascii_case("host") || name.eq_ignore_ascii_case("connection") {
+                continue;
+            }
+            write!(text, "{name}: {value}\r\n").expect(infallible);
+        }
+
+        text.push_str("\r\n");
+        text
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fmt::Write as _;
     use std::io::Cursor;
 
     fn lines(head: &[&str]) -> Vec<String> {

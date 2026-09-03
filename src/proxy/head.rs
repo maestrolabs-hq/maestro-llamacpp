@@ -176,11 +176,6 @@ impl Head {
     ///
     /// Every other header is passed through as received. The router is not a
     /// participant in the conversation, only a relay for it.
-    ///
-    /// Written and unit-tested one commit before the relay that sends it, so
-    /// until then its only caller is its own tests. The allowance comes off in
-    /// Task 5.
-    #[allow(dead_code)]
     pub(super) fn rewrite(&self, upstream: SocketAddr) -> String {
         let mut text = String::new();
         let method = &self.method;

@@ -10,8 +10,11 @@
 //! `streaming.rs`. A failure here means routing; a failure there means the
 //! relay.
 
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+
 mod support;
-use support::{MODEL, ModelsRoot, catalog_text, get, post, request, serving, status};
+use support::{MODEL, ModelsRoot, catalog_text, get, health, post, request, serving, status};
 
 #[test]
 fn an_unknown_identifier_is_not_found_and_names_what_the_catalog_carries() {
@@ -69,14 +72,12 @@ fn a_request_reaches_the_child_with_the_prefix_stripped() {
 fn a_body_is_forwarded_to_the_child_with_its_headers() {
     let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
 
-    let reply = request(
-        serving.address(),
-        &post("/models/gemma3/v1/echo", "{\"model\":\"something-else\"}"),
-    );
+    let body = "{\"model\":\"something-else\"}";
+    let reply = request(serving.address(), &post("/models/gemma3/v1/echo", body));
 
     assert_eq!(status(&reply), Some(200), "the child answered:\n{reply}");
     assert!(
-        reply.contains("Content-Length: 25"),
+        reply.contains(&format!("Content-Length: {}", body.len())),
         "the declared length reaches the child unchanged:\n{reply}"
     );
     assert!(
@@ -147,4 +148,41 @@ fn an_entry_whose_child_cannot_start_is_a_bad_gateway() {
         "the child could not be started:\n{reply}"
     );
     assert!(reply.contains("gemma3"), "naming the entry:\n{reply}");
+}
+
+#[test]
+fn stopping_a_router_ends_the_children_it_started() {
+    let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
+    let reply = request(serving.address(), &get("/models/gemma3/v1/echo"));
+
+    // The stub reflects the Host it was given, which the rewrite set to the
+    // child's own address. That is how this test learns a port the router
+    // never told anyone about.
+    let endpoint = reply
+        .lines()
+        .find_map(|line| line.strip_prefix("Host: "))
+        .expect("the echo carries the address the child was reached on")
+        .to_owned();
+    assert_eq!(
+        health(endpoint.as_str()),
+        Some(200),
+        "the child answers while the router holds it"
+    );
+
+    drop(serving);
+
+    // Polled rather than slept on: killing a process is not instantaneous and
+    // a fixed wait would be either flaky or slow.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if health(endpoint.as_str()).is_none() {
+            return;
+        }
+        sleep(Duration::from_millis(50));
+    }
+    panic!(
+        "the child at {endpoint} outlived the router that started it. A child \
+         is a separate process, and nothing in the operating system ends it \
+         when this one goes."
+    );
 }

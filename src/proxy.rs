@@ -9,9 +9,15 @@
 //! [`Router::address`] reports what the operating system gave. A caller that
 //! asked for port zero -- a test, usually -- has no other way to find out.
 //!
-//! [`Router::serve`] runs until the process ends. It does not return, and
-//! there is no stop: the router's lifetime is the process's lifetime, and
-//! children die with it because [`crate::launch::Child`] says so.
+//! [`Router::serve`] runs until the process ends. It does not return.
+//!
+//! [`Router::stop`] ends the children it started. This exists because a child
+//! is a separate process and nothing in the operating system ties its lifetime
+//! to this one: a router that is never dropped -- which is every router whose
+//! `serve` is still running -- leaves its children alive after the process
+//! that started them is gone. That was measured, not assumed: forty-five stub
+//! servers outlived the test binaries that started them before this method
+//! existed. A caller that ends without calling it leaves them behind.
 //!
 //! The router binds loopback only, as children do. Serving a network is a
 //! security design this repository has not written, and a caller that asks for
@@ -29,8 +35,7 @@
 //! prevent.
 
 use std::collections::HashMap;
-use std::io::{BufReader, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
@@ -38,7 +43,9 @@ use std::thread;
 use crate::catalog::{Catalog, Entry};
 use crate::launch::{Child, Failure, Server};
 
+mod answer;
 mod head;
+mod relay;
 
 /// The public listener, and everything a request needs to be answered.
 pub struct Router {
@@ -109,6 +116,22 @@ impl Router {
             .expect("a bound listener has an address")
     }
 
+    /// Stops every child this router started, and forgets them.
+    ///
+    /// A child still relaying a response is held by that relay and stops when
+    /// it finishes, which is the behaviour a caller wants: this ends the
+    /// router's claim on its children, not the answer somebody is reading.
+    ///
+    /// The next request for an entry starts a fresh child, so this is safe to
+    /// call on a router that goes on serving.
+    pub fn stop(&self) {
+        self.shared
+            .children
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
+
     /// Accepts connections until the process ends.
     ///
     /// One thread per connection, because a streamed response occupies its
@@ -120,7 +143,7 @@ impl Router {
             thread::spawn(move || {
                 // A failed answer is a caller that hung up, which is its own
                 // business. The next connection is what matters.
-                drop(answer(&shared, stream));
+                drop(answer::to(&shared, stream));
             });
         }
     }
@@ -152,82 +175,4 @@ impl Shared {
             .collect::<Vec<_>>()
             .join(", ")
     }
-}
-
-/// Answers one connection.
-fn answer(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> {
-    let mut reader = BufReader::new(stream.try_clone()?);
-
-    let lines = match head::read(&mut reader) {
-        Ok(lines) => lines,
-        Err(failure) => return refuse(&mut stream, 400, &failure.to_string()),
-    };
-    let request = match head::parse(&lines) {
-        Ok(request) => request,
-        Err(failure) => return refuse(&mut stream, 404, &failure.to_string()),
-    };
-
-    let Some(entry) = shared.catalog.entry(&request.id) else {
-        let id = &request.id;
-        return refuse(
-            &mut stream,
-            404,
-            &format!(
-                "no model called '{id}'; this catalog carries: {}",
-                shared.known()
-            ),
-        );
-    };
-
-    // Refused before anything is started, so a request this router will not
-    // serve does not cost a model load.
-    if request.chunked {
-        let id = &request.id;
-        return refuse(
-            &mut stream,
-            501,
-            &format!(
-                "entry '{id}': this router does not implement chunked request \
-                 bodies; send a body with a Content-Length"
-            ),
-        );
-    }
-
-    // The two causes are distinguished by launch::Failure's variants rather
-    // than by reading its message, so the wording of an error is not a
-    // load-bearing interface.
-    let child = match shared.child(entry) {
-        Ok(child) => child,
-        Err(Failure::NotReady(message)) => return refuse(&mut stream, 504, &message),
-        Err(Failure::Unavailable(message)) => return refuse(&mut stream, 502, &message),
-    };
-
-    let _ = (&request, &child, &mut reader);
-    todo!("Task 5: the relay")
-}
-
-/// The router's own answer, as a complete reply with a declared length.
-///
-/// Distinct from anything relayed: these are the four refusals that happen
-/// before a single byte of a child's response has been forwarded, which is
-/// what makes a status still possible.
-fn refuse(stream: &mut TcpStream, status: u16, message: &str) -> std::io::Result<()> {
-    let reason = match status {
-        400 => "Bad Request",
-        404 => "Not Found",
-        501 => "Not Implemented",
-        502 => "Bad Gateway",
-        _ => "Gateway Timeout",
-    };
-    write!(
-        stream,
-        "HTTP/1.1 {status} {reason}\r\n\
-         Content-Type: text/plain\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n\
-         {message}",
-        message.len()
-    )?;
-    stream.flush()
 }

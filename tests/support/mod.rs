@@ -208,7 +208,20 @@ pub fn catalog_text(extra: &str) -> String {
 /// serving them.
 pub struct Serving {
     address: std::net::SocketAddr,
+    router: std::sync::Arc<maestro_llamacpp::proxy::Router>,
     _root: ModelsRoot,
+}
+
+/// Ends the router's children when the test that started them ends.
+///
+/// Without this every test leaves a server process behind: `serve` never
+/// returns, so the router is never dropped, so the children it holds are never
+/// stopped -- and a child is a separate process that outlives the one that
+/// started it.
+impl Drop for Serving {
+    fn drop(&mut self) {
+        self.router.stop();
+    }
 }
 
 impl Serving {
@@ -238,13 +251,16 @@ pub fn serving(catalog: &str, root: ModelsRoot) -> Serving {
     )
     .expect("an ephemeral loopback port");
 
+    let router = std::sync::Arc::new(router);
     let address = router.address();
-    // Detached on purpose: `serve` runs until the process ends, so there is
-    // nothing to join. The children it starts are stopped when the router is
-    // dropped, which happens when this thread's stack unwinds at process exit.
-    std::thread::spawn(move || router.serve());
+    // Detached on purpose: `serve` never returns, so there is nothing to join.
+    // The accept loop outlives the test; what must not outlive it is the
+    // children, which `Serving`'s Drop ends.
+    let serving = std::sync::Arc::clone(&router);
+    std::thread::spawn(move || serving.serve());
     Serving {
         address,
+        router,
         _root: root,
     }
 }

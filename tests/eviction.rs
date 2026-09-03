@@ -22,6 +22,10 @@ use support::{MODEL, ModelsRoot, budgeted, get, health, post, request, serving, 
 /// A second model file, so there is something to evict in favour of.
 const SECOND_MODEL: &str = "cache/qwen/qwen3-8b.gguf";
 
+/// A third, so one decision can name two entries and still have somewhere to
+/// put what it made room for.
+const THIRD_MODEL: &str = "cache/phi/phi-4.gguf";
+
 /// Two entries, each stating what it is estimated to cost.
 ///
 /// Written as text because that is how a catalog reaches the router, and
@@ -219,4 +223,127 @@ fn a_child_with_a_stream_in_flight_is_not_unloaded() {
          child was unloaded while somebody was reading it, which a caller \
          cannot tell apart from a model that finished early:\n{rest}"
     );
+}
+
+/// Three entries whose estimates make one request unload the other two.
+///
+/// Two is the point. Unloading the first ends a process, and ending a process
+/// is the slowest thing a decision does -- which is the window a request for
+/// the second can arrive in.
+///
+/// `qwen38` streams slowly because the case below needs a reader that is still
+/// reading when the decision reaches its slot.
+fn three_entries() -> String {
+    format!(
+        "version = 1\n\
+         \n\
+         [defaults]\n\
+         context_size = 4096\n\
+         residency = \"on-demand\"\n\
+         startup_timeout_seconds = 30\n\
+         \n\
+         [models.gemma3]\n\
+         path = \"{MODEL}\"\n\
+         memory_estimate_mib = 3000\n\
+         \n\
+         [models.qwen38]\n\
+         path = \"{SECOND_MODEL}\"\n\
+         memory_estimate_mib = 3000\n\
+         \n\
+         [models.qwen38.flags]\n\
+         stream-events = \"40\"\n\
+         stream-gap = \"50\"\n\
+         \n\
+         [models.phi]\n\
+         path = \"{THIRD_MODEL}\"\n\
+         memory_estimate_mib = 9000\n"
+    )
+}
+
+/// Opens a stream to a named entry and returns it with the reply arriving.
+///
+/// Unlike `start_stream`, the path names the model, so nothing depends on what
+/// the body says. A refusal is a legitimate outcome here -- the room may
+/// genuinely have gone -- so this waits for bytes rather than for an event.
+fn start_dedicated_stream(address: std::net::SocketAddr, id: &str) -> TcpStream {
+    let mut stream = TcpStream::connect(address).expect("the router is listening");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("a read timeout, so a hang fails rather than blocking the suite");
+    let path = format!("/models/{id}/v1/chat/completions");
+    stream
+        .write_all(post(&path, "{\"stream\":true}").as_bytes())
+        .expect("write");
+
+    let mut first = [0u8; 512];
+    let read = stream.read(&mut first).expect("something comes back");
+    assert!(read > 0, "the router answered one way or the other");
+    stream
+}
+
+#[test]
+fn a_child_that_becomes_busy_during_a_decision_is_not_taken_from_its_slot() {
+    // The interleaving this drives: a decision reads every slot, finds qwen38
+    // idle, and names it for unloading; a request for qwen38 then arrives and
+    // takes a reference; the decision, acting on what it read a moment ago,
+    // reaches qwen38's slot. Reading the signal under one lock acquisition and
+    // acting on it under another is what makes that possible.
+    //
+    // The consequence is silent rather than loud. The reference keeps the
+    // process alive, so no stream is truncated -- but the slot is emptied while
+    // the process runs, so the router believes it freed memory it did not, goes
+    // over its budget, and undercounts that entry until the reader finishes.
+    //
+    // Swept rather than timed once: the window is the length of one process
+    // kill, and where it falls depends on the machine. Every attempt asserts
+    // the same thing, and the assertion holds whichever way the race went --
+    // which is why this is deterministic in the direction that matters. It
+    // finds the defect probabilistically and proves the fix absolutely.
+    let staggers = [0, 250, 500, 750, 1_000, 1_500, 2_000, 3_000];
+
+    for micros in staggers {
+        let serving = budgeted(
+            &three_entries(),
+            ModelsRoot::with(&[MODEL, SECOND_MODEL, THIRD_MODEL]),
+            Some(9000),
+        );
+        let address = serving.address();
+
+        // Both loaded and idle: 3000 and 3000 against 9000 leaves room for
+        // neither to be disturbed yet. gemma3 first, so it is the colder of the
+        // two and the decision below reaches it first.
+        let first = request(address, &get("/models/gemma3/v1/echo"));
+        let second = request(address, &get("/models/qwen38/v1/echo"));
+        assert_eq!(status(&first), Some(200), "gemma3 is loaded:\n{first}");
+        assert_eq!(status(&second), Some(200), "qwen38 is loaded:\n{second}");
+        let warm = child_endpoint(&second);
+
+        let reader = std::thread::spawn(move || {
+            sleep(Duration::from_micros(micros));
+            start_dedicated_stream(address, "qwen38")
+        });
+
+        // 9000 against a budget of 9000 already holding 6000: both of the
+        // others have to go.
+        let wanted = request(address, &get("/models/phi/v1/echo"));
+
+        // Held across the assertion on purpose. The reference is what keeps the
+        // evicted process alive, so dropping it first would let the very thing
+        // this asserts about disappear before it is looked at.
+        let streaming = reader.join().expect("the reading thread");
+
+        if status(&wanted) == Some(200) {
+            assert_eq!(
+                health(warm.as_str()),
+                None,
+                "phi was answered, so the room it needed was taken -- but the \
+                 child at {warm} is still running, which means its slot was \
+                 emptied while somebody was reading from it. The router is now \
+                 over its budget by that entry's whole estimate and does not \
+                 know it (stagger {micros}us)"
+            );
+        }
+
+        drop(streaming);
+    }
 }

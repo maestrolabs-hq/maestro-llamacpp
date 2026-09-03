@@ -320,25 +320,41 @@ fn three_entries() -> String {
     )
 }
 
+/// Both ways the race can go, each asserted for what it must leave behind.
+///
+/// The interleaving this drives: a decision reads every slot, finds qwen38
+/// idle, and names it for unloading; a request for qwen38 then arrives and
+/// takes a reference; the decision, acting on what it read a moment ago,
+/// reaches qwen38's slot. Reading the signal under one lock acquisition and
+/// acting on it under another is what makes that possible.
+///
+/// The consequence is silent rather than loud. The reference keeps the process
+/// alive, so no stream is truncated -- but the slot is emptied while the
+/// process runs, so the router believes it freed memory it did not, goes over
+/// its budget, and undercounts that entry until the reader finishes.
+///
+/// Three outcomes are legitimate and each says something different, so each is
+/// asserted rather than only the first:
+///
+/// - **served**, when the reader had not arrived: both idle entries went, and
+///   the room is real;
+/// - **refused at unload**, when it arrived inside the window: the colder
+///   entry was already taken, and the busy one kept its slot;
+/// - **refused by policy**, when it arrived before the snapshot: nothing was
+///   taken at all.
+///
+/// Which one happens depends on the machine, so none of them is required. What
+/// is required is that at least one iteration evicted something: an estimate
+/// raised past the budget, or a model file dropped from the root, would leave
+/// every iteration refusing for a reason this test does not guard, and it
+/// would stay green while exercising nothing. The rule itself is proved
+/// without a race in `proxy::loaded`; this is the end-to-end half.
 #[test]
 fn a_child_that_becomes_busy_during_a_decision_is_not_taken_from_its_slot() {
-    // The interleaving this drives: a decision reads every slot, finds qwen38
-    // idle, and names it for unloading; a request for qwen38 then arrives and
-    // takes a reference; the decision, acting on what it read a moment ago,
-    // reaches qwen38's slot. Reading the signal under one lock acquisition and
-    // acting on it under another is what makes that possible.
-    //
-    // The consequence is silent rather than loud. The reference keeps the
-    // process alive, so no stream is truncated -- but the slot is emptied while
-    // the process runs, so the router believes it freed memory it did not, goes
-    // over its budget, and undercounts that entry until the reader finishes.
-    //
     // Swept rather than timed once: the window is the length of one process
-    // kill, and where it falls depends on the machine. Every attempt asserts
-    // the same thing, and the assertion holds whichever way the race went --
-    // which is why this is deterministic in the direction that matters. It
-    // finds the defect probabilistically and proves the fix absolutely.
+    // kill, and where it falls depends on the machine.
     let staggers = [0, 250, 500, 750, 1_000, 1_500, 2_000, 3_000];
+    let mut outcomes = Vec::new();
 
     for micros in staggers {
         let serving = budgeted(
@@ -355,11 +371,10 @@ fn a_child_that_becomes_busy_during_a_decision_is_not_taken_from_its_slot() {
         let second = request(address, &get("/models/qwen38/v1/echo"));
         assert_eq!(status(&first), Some(200), "gemma3 is loaded:\n{first}");
         assert_eq!(status(&second), Some(200), "qwen38 is loaded:\n{second}");
+        let cold = child_endpoint(&first);
         let warm = child_endpoint(&second);
 
         // The path names the model, so this depends on nothing the body says.
-        // A refusal is a legitimate answer here -- the room may genuinely have
-        // gone -- and the assertion below holds either way.
         let reader = std::thread::spawn(move || {
             sleep(Duration::from_micros(micros));
             start_stream(
@@ -374,23 +389,87 @@ fn a_child_that_becomes_busy_during_a_decision_is_not_taken_from_its_slot() {
         // others have to go.
         let wanted = request(address, &get("/models/phi/v1/echo"));
 
-        // Held across the assertion on purpose. The reference is what keeps the
-        // evicted process alive, so dropping it first would let the very thing
-        // this asserts about disappear before it is looked at.
+        // Held across the assertions on purpose. The reference is what keeps
+        // the evicted process alive, so dropping it first would let the very
+        // thing this asserts about disappear before it is looked at.
         let streaming = reader.join().expect("the reading thread");
 
-        if status(&wanted) == Some(200) {
-            assert_eq!(
-                health(warm.as_str()),
-                None,
-                "phi was answered, so the room it needed was taken -- but the \
-                 child at {warm} is still running, which means its slot was \
-                 emptied while somebody was reading from it. The router is now \
-                 over its budget by that entry's whole estimate and does not \
-                 know it (stagger {micros}us)"
-            );
-        }
+        let outcome = match status(&wanted) {
+            Some(200) => {
+                assert_eq!(
+                    health(warm.as_str()),
+                    None,
+                    "phi was answered, so the room it needed was taken -- but \
+                     the child at {warm} is still running, which means its slot \
+                     was emptied while somebody was reading from it. The router \
+                     is now over its budget by that entry's whole estimate and \
+                     does not know it (stagger {micros}us)"
+                );
+                "served"
+            }
+            Some(503) => {
+                // Whichever refusal this is, the busy child is untouched: still
+                // running, and still the one its slot hands out. A slot emptied
+                // under a reader would leave the process running unaccounted
+                // for, which is the defect, and the next request would start a
+                // second child for the same entry.
+                assert_eq!(
+                    health(warm.as_str()),
+                    Some(200),
+                    "phi was refused, so nothing took the busy child's room -- \
+                     but the child at {warm} has stopped (stagger {micros}us)"
+                );
+                let again = request(address, &get("/models/qwen38/v1/echo"));
+                assert_eq!(
+                    child_endpoint(&again),
+                    warm,
+                    "and its slot still holds it. A different address here \
+                     means the slot was emptied under its reader and a second \
+                     child was started for one entry (stagger {micros}us)"
+                );
 
+                if wanted.contains("reached first") {
+                    // The re-check fired: the decision had taken the colder
+                    // entry before it reached the busy one.
+                    assert!(
+                        wanted.contains("qwen38"),
+                        "the refusal names the model whose room it could not \
+                         take:\n{wanted}"
+                    );
+                    assert_eq!(
+                        health(cold.as_str()),
+                        None,
+                        "the colder entry was idle when the decision reached \
+                         it, so it went (stagger {micros}us)"
+                    );
+                    "refused at unload"
+                } else {
+                    // The snapshot already saw it busy, so it was never a
+                    // candidate and nothing was taken.
+                    assert_eq!(
+                        health(cold.as_str()),
+                        Some(200),
+                        "the decision refused before taking anything, so the \
+                         colder entry is untouched (stagger {micros}us)"
+                    );
+                    "refused by policy"
+                }
+            }
+            other => panic!(
+                "phi was neither served nor refused ({other:?}) at stagger \
+                 {micros}us:\n{wanted}"
+            ),
+        };
+
+        outcomes.push((micros, outcome));
         drop(streaming);
     }
+
+    assert!(
+        outcomes.iter().any(|(_, kind)| *kind == "served"),
+        "no iteration evicted anything, so this no longer exercises the \
+         decision it is named for. An estimate raised past the budget, or a \
+         model file dropped from the root, refuses every iteration for a \
+         reason nothing here guards: {outcomes:?}"
+    );
 }

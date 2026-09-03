@@ -7,6 +7,10 @@
 # interpret them, which is what keeps a change to that server's flag surface
 # an edit here rather than a change to the code.
 #
+# The flag spellings below were verified by hand against llama-server
+# 0.3.0-dev (build 1, commit 77f132c). That surface moves between releases, so
+# the claim is only true against a version and an unpinned one rots silently.
+#
 # The memory estimates are estimates. Nothing reads them until eviction
 # arrives, and measuring them belongs with the slice that has to make a
 # decision from them.
@@ -73,9 +77,14 @@ spec-type = "draft-mtp"
 spec-draft-n-max = "3"
 
 # A small model kept for cheap work that does not deserve the large one.
+#
+# The location is the download cache laid out by the tool that fetched it,
+# hash and all, rather than a tidier path someone would have to maintain by
+# hand. It is what `models.ini` points at today.
 [models.gemma3]
-path = "cache/llama.cpp/gemma-3-1b-it/gemma-3-1b-it-Q4_K_M.gguf"
+path = ".cache/llama.cpp/models--ggml-org--gemma-3-1b-it-GGUF/snapshots/f9c28bcd85737ffc5aef028638d3341d49869c27/gemma-3-1b-it-Q4_K_M.gguf"
 memory_estimate_mib = 2048
+startup_timeout_seconds = 60
 
 [models.gemma3.flags]
 fa = "on"

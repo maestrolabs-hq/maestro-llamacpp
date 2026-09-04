@@ -6,19 +6,47 @@
 //! function and a rule that holds when a thread is periodically emptying
 //! slots are not the same rule until both have been watched.
 //!
-//! Every window here is two hundred milliseconds, injected through
-//! `support::windowed` rather than through `MAESTRO_IDLE_UNLOAD_SECONDS`,
-//! which the global constraints forbid: that variable is process-global and
-//! would race every other test in this binary. At most two children, and
-//! exactly one case here waits for a sweep.
+//! Windows are injected through `support::windowed` rather than through
+//! `MAESTRO_IDLE_UNLOAD_SECONDS`, which the global constraints forbid: that
+//! variable is process-global and would race every other test in this
+//! binary. At most two children, and exactly one case here waits for a
+//! sweep.
+//!
+//! `WINDOW` is three seconds rather than the two hundred milliseconds an
+//! earlier version of this file used. A round trip through a real child --
+//! spawning it, on Windows roughly three times slower than on Linux, plus
+//! the request itself -- can itself take longer than two hundred
+//! milliseconds on a loaded Windows runner. A window that short raced that
+//! latency: two requests sent back to back, with no sleep between them,
+//! could already be more than one window apart by the time the second
+//! reached the router, so a live reaper reaped the model between them and a
+//! test asserting both landed on the same child failed -- correctly,
+//! against a window that was never wide enough to hold the platform's own
+//! overhead. Three seconds leaves that overhead comfortably inside a single
+//! window on every platform this suite runs on.
+//!
+//! `QUICK_WINDOW` stays short, for the two tests that sleep a multiple of
+//! it to prove a *non*-event -- a resident or an unconfigured window never
+//! unloading. Multiplying `WINDOW` there instead would turn a fast proof
+//! into one lasting several seconds for no gain: neither test's assertion
+//! depends on the window being wide enough to survive real network
+//! latency, since neither sends a second request to race against.
 
 use std::time::Duration;
 
 mod support;
 use support::{MODEL, ModelsRoot, get, post, request, settled, status, windowed};
 
-/// The window every case in this file uses.
-const WINDOW: Duration = Duration::from_millis(200);
+/// The window the tests that send a second request use, wide enough that a
+/// slow child spawn and an HTTP round trip on any platform this suite runs
+/// on cannot by themselves push two back-to-back requests a whole window
+/// apart.
+const WINDOW: Duration = Duration::from_secs(3);
+
+/// The window the two tests that sleep a multiple of it to prove a
+/// non-event use, kept short so proving "never unloaded" stays fast rather
+/// than scaling with `WINDOW`.
+const QUICK_WINDOW: Duration = Duration::from_millis(200);
 
 /// The resident's weights, beside the on-demand entry's.
 const RESIDENT_MODEL: &str = "cache/qwen/qwen3-4b.gguf";
@@ -38,10 +66,12 @@ fn child_endpoint(reply: &str) -> String {
 }
 
 /// How many paced events the slow-stream case asks for, and how far apart.
-/// Their product outlasts `WINDOW`, so a `last_used` stamped at the request's
-/// start would already be older than the window by the time it returns.
-const SLOW_STREAM_EVENTS: u32 = 6;
-const SLOW_STREAM_GAP_MS: u32 = 100;
+/// Their product -- five seconds -- clears `WINDOW` with two seconds to
+/// spare, so a `last_used` stamped at the request's start would already be
+/// older than the window by the time it returns, on every platform this
+/// suite runs on.
+const SLOW_STREAM_EVENTS: u32 = 10;
+const SLOW_STREAM_GAP_MS: u32 = 500;
 
 /// The `gemma3` entry every case in this file starts from, with `extra`
 /// appended -- another entry, or flags on this one.
@@ -171,7 +201,7 @@ fn a_resident_outlives_the_window_and_is_still_named() {
         &resident_and_on_demand(),
         ModelsRoot::with(&[MODEL, RESIDENT_MODEL]),
         None,
-        WINDOW,
+        QUICK_WINDOW,
     );
 
     settled(&serving, "loaded its resident", |s| {
@@ -179,8 +209,9 @@ fn a_resident_outlives_the_window_and_is_still_named() {
     });
 
     // Several sweeps' worth of time, so a resident that were mistakenly
-    // reapable would already be gone.
-    std::thread::sleep(WINDOW * 6);
+    // reapable would already be gone. Against `QUICK_WINDOW` rather than
+    // `WINDOW`, so proving a non-event stays fast.
+    std::thread::sleep(QUICK_WINDOW * 6);
 
     assert!(
         serving.loaded().iter().any(|id| id == "resident"),
@@ -201,8 +232,9 @@ fn with_no_window_configured_an_entry_idle_far_past_any_window_is_still_named() 
     let reply = request(serving.address(), &get("/models/gemma3/v1/echo"));
     assert_eq!(status(&reply), Some(200), "the entry answers:\n{reply}");
 
-    // Far past any window this file uses.
-    std::thread::sleep(WINDOW * 6);
+    // Far past any window this file uses, against `QUICK_WINDOW` rather than
+    // `WINDOW`, so proving a non-event stays fast.
+    std::thread::sleep(QUICK_WINDOW * 6);
 
     assert!(
         serving.loaded().iter().any(|id| id == "gemma3"),
@@ -221,10 +253,10 @@ fn last_used_is_stamped_when_a_relay_ends_rather_than_when_it_started() {
         WINDOW,
     );
 
-    // The relay outlasts the window: six events a hundred milliseconds apart
-    // is 600ms of streaming against a 200ms window. A last_used stamped at
-    // the request's start would already be well older than the window by the
-    // time this returns.
+    // The relay outlasts the window: ten events half a second apart is five
+    // seconds of streaming against a three-second window. A last_used
+    // stamped at the request's start would already be well older than the
+    // window by the time this returns.
     let reply = request(
         serving.address(),
         &post(
@@ -236,9 +268,9 @@ fn last_used_is_stamped_when_a_relay_ends_rather_than_when_it_started() {
 
     // A pause short of the window, but past at least one sweep interval, so
     // the reaper has had a chance to act on whatever `last_used` says. A
-    // last_used stamped at the request's start is already 600ms + this pause
-    // old, far past the 200ms window; one stamped when the relay ended is
-    // only this pause old, still within it.
+    // last_used stamped at the request's start is already five seconds plus
+    // this pause old, far past the window; one stamped when the relay ended
+    // is only this pause old, still within it.
     std::thread::sleep(
         WINDOW
             .checked_sub(Duration::from_millis(50))

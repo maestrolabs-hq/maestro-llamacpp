@@ -17,11 +17,11 @@ use std::time::Instant;
 
 use crate::admission::{Budget, Decision};
 use crate::catalog::{Catalog, Entry};
-use crate::idle::IdleWindow;
 use crate::launch::{Child, Failure, Server};
 
 use super::loaded::{Loaded, Slot, live_child, take_if_idle};
 
+mod sweep;
 mod view;
 
 /// Every entry's slot, and the budget they compete for.
@@ -172,7 +172,7 @@ impl Slots {
     /// something is put in it.
     ///
     /// Each is taken by [`take_if_idle`](super::loaded::take_if_idle), which
-    /// re-reads the busy signal for the reason [`Slots::snapshot`] records.
+    /// re-reads the busy signal for the reason [`Slots::held`] records.
     ///
     /// # Errors
     ///
@@ -189,56 +189,5 @@ impl Slots {
             }
         }
         Ok(())
-    }
-
-    /// Unloads what has gone idle past `window`, and names what actually
-    /// went.
-    ///
-    /// Built from the same snapshot admission uses, and taken the same way:
-    /// under the generalised path from `loaded::take_if_idle`, with the
-    /// caller's additional condition re-reading `last_used` against the
-    /// cutoff rather than trusting the snapshot's copy of it. An entry that
-    /// gained a reader, or answered again, between the snapshot and the take
-    /// stays loaded and is not named -- reporting it as unloaded would be
-    /// reporting a decision rather than an outcome.
-    ///
-    /// Takes no admission lock: this only ever removes, so a concurrent
-    /// `admit` that snapshotted before this ran simply finds more room than
-    /// it counted on, which is conservative rather than wrong.
-    pub(super) fn sweep_idle(&self, catalog: &Catalog, window: &IdleWindow) -> Vec<String> {
-        let Some(duration) = window.duration() else {
-            return Vec::new();
-        };
-        let now = Instant::now();
-        let cutoff = now.checked_sub(duration).unwrap_or(now);
-
-        window
-            .expired(&self.held(catalog), now)
-            .into_iter()
-            .filter(|id| take_if_idle(self.slot(id), |held| held.last_used <= cutoff))
-            .collect()
-    }
-
-    /// Marks this entry's slot as used just now, without touching whether
-    /// anything is running in it.
-    ///
-    /// Called after a relay finishes, so idleness is judged from when a
-    /// request ended rather than when it started -- a relay that outlives the
-    /// idle window must not look idle for the whole of its own duration.
-    /// Called with the child still held by its caller, so its reference keeps
-    /// the slot's `Arc` at a count no sweep can take between the relay ending
-    /// and this landing.
-    ///
-    /// Does nothing if the slot has since been emptied, which is not an error:
-    /// nothing is left to stamp.
-    pub(super) fn touch(&self, id: &str) {
-        if let Some(held) = self
-            .slot(id)
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_mut()
-        {
-            held.last_used = Instant::now();
-        }
     }
 }

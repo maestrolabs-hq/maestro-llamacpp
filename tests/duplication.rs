@@ -111,14 +111,6 @@ const ACCEPTED: &[(&str, &str)] = &[
          inside the function that builds a process, and keeping those apart is \
          what makes either of them readable.",
     ),
-    (
-        "slot <-> touch",
-        "An artifact of both being short: slot returns a reference and takes \
-         no lock, touch takes the slot's lock and writes through it. They \
-         share no line, and touch already calls slot to reach what it locks -- \
-         merging them would mean one method sometimes locking and sometimes \
-         not, decided by a caller nothing here would name.",
-    ),
 ];
 
 /// `path:lines function name <-> path:lines function name` -> `name <-> name`.

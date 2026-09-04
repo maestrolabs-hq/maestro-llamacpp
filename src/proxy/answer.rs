@@ -143,13 +143,21 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
         Err(Failure::Refused(message)) => return refuse(&mut stream, 503, &message),
     };
 
-    relay::run(
+    // The relay is timed by when it ends rather than when it started, so a
+    // response that takes longer than the idle window does not make its own
+    // model look idle for the whole of its own duration. `child` is still in
+    // scope while this runs, which is load-bearing: its `Arc` keeps the
+    // slot's strong count at two or more, so no sweep can empty it between
+    // the relay ending and the touch landing.
+    let outcome = relay::run(
         &request,
         &child,
         buffered.as_deref(),
         &mut reader,
         &mut stream,
-    )
+    );
+    shared.slots.touch(&entry.id);
+    outcome
 }
 
 /// Every entry the catalog carries, in the shape a client expects.

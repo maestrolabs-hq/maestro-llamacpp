@@ -218,4 +218,27 @@ impl Slots {
             .filter(|id| take_if_idle(self.slot(id), |held| held.last_used <= cutoff))
             .collect()
     }
+
+    /// Marks this entry's slot as used just now, without touching whether
+    /// anything is running in it.
+    ///
+    /// Called after a relay finishes, so idleness is judged from when a
+    /// request ended rather than when it started -- a relay that outlives the
+    /// idle window must not look idle for the whole of its own duration.
+    /// Called with the child still held by its caller, so its reference keeps
+    /// the slot's `Arc` at a count no sweep can take between the relay ending
+    /// and this landing.
+    ///
+    /// Does nothing if the slot has since been emptied, which is not an error:
+    /// nothing is left to stamp.
+    pub(super) fn touch(&self, id: &str) {
+        if let Some(held) = self
+            .slot(id)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            held.last_used = Instant::now();
+        }
+    }
 }

@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 mod support;
-use support::{MODEL, ModelsRoot, get, request, settled, status, windowed};
+use support::{MODEL, ModelsRoot, get, post, request, settled, status, windowed};
 
 /// The window every case in this file uses.
 const WINDOW: Duration = Duration::from_millis(200);
@@ -23,8 +23,20 @@ const WINDOW: Duration = Duration::from_millis(200);
 /// The resident's weights, beside the on-demand entry's.
 const RESIDENT_MODEL: &str = "cache/qwen/qwen3-4b.gguf";
 
-/// One resident entry and one on-demand entry, each on-demand by default.
-fn resident_and_on_demand() -> String {
+/// How many paced events the slow-stream case asks for, and how far apart.
+/// Their product outlasts `WINDOW`, so a `last_used` stamped at the request's
+/// start would already be older than the window by the time it returns.
+const SLOW_STREAM_EVENTS: u32 = 6;
+const SLOW_STREAM_GAP_MS: u32 = 100;
+
+/// The `gemma3` entry every case in this file starts from, with `extra`
+/// appended -- another entry, or flags on this one.
+///
+/// Factored out once two catalog builders here started from the same header:
+/// `resident_and_on_demand` and `on_demand_with_slow_stream` differ only in
+/// what they append, mirroring how `support::catalog_text` takes its own
+/// `extra`.
+fn one_on_demand_entry(extra: &str) -> String {
     format!(
         "version = 1\n\
          \n\
@@ -36,11 +48,26 @@ fn resident_and_on_demand() -> String {
          \n\
          [models.gemma3]\n\
          path = \"{MODEL}\"\n\
-         \n\
-         [models.resident]\n\
+         {extra}"
+    )
+}
+
+/// One on-demand entry whose child streams slower than `WINDOW`.
+fn on_demand_with_slow_stream() -> String {
+    one_on_demand_entry(&format!(
+        "\n[models.gemma3.flags]\n\
+         stream-events = \"{SLOW_STREAM_EVENTS}\"\n\
+         stream-gap = \"{SLOW_STREAM_GAP_MS}\"\n"
+    ))
+}
+
+/// One resident entry and one on-demand entry, each on-demand by default.
+fn resident_and_on_demand() -> String {
+    one_on_demand_entry(&format!(
+        "\n[models.resident]\n\
          path = \"{RESIDENT_MODEL}\"\n\
          residency = \"resident\"\n"
-    )
+    ))
 }
 
 #[test]
@@ -135,5 +162,52 @@ fn with_no_window_configured_an_entry_idle_far_past_any_window_is_still_named() 
         "no window configured means no reaper, however long anything sits \
          idle: {:?}",
         serving.loaded()
+    );
+}
+
+#[test]
+fn last_used_is_stamped_when_a_relay_ends_rather_than_when_it_started() {
+    let serving = windowed(
+        &on_demand_with_slow_stream(),
+        ModelsRoot::with(&[MODEL]),
+        None,
+        WINDOW,
+    );
+
+    // The relay outlasts the window: six events a hundred milliseconds apart
+    // is 600ms of streaming against a 200ms window. A last_used stamped at
+    // the request's start would already be well older than the window by the
+    // time this returns.
+    let reply = request(
+        serving.address(),
+        &post(
+            "/models/gemma3/v1/chat/completions",
+            "{\"model\":\"gemma3\",\"stream\":true}",
+        ),
+    );
+    assert_eq!(status(&reply), Some(200), "the stream completes:\n{reply}");
+
+    // A pause short of the window, but past at least one sweep interval, so
+    // the reaper has had a chance to act on whatever `last_used` says. A
+    // last_used stamped at the request's start is already 600ms + this pause
+    // old, far past the 200ms window; one stamped when the relay ended is
+    // only this pause old, still within it.
+    std::thread::sleep(
+        WINDOW
+            .checked_sub(Duration::from_millis(50))
+            .expect("WINDOW is longer than 50ms"),
+    );
+
+    assert!(
+        serving.loaded().iter().any(|id| id == "gemma3"),
+        "a relay that just finished must not look idle for the whole of its \
+         own duration: {:?}",
+        serving.loaded()
+    );
+
+    settled(
+        &serving,
+        "unloaded the entry once it had actually gone idle",
+        |s| !s.loaded().iter().any(|id| id == "gemma3"),
     );
 }

@@ -86,6 +86,27 @@ between those two is whether anything is ever evicted.
 
 The router says which it found at startup.
 
+### How long unused memory may be held
+
+| Source | Value |
+| --- | --- |
+| `MAESTRO_IDLE_UNLOAD_SECONDS` | the window in whole seconds, when set and not empty |
+| otherwise, or `0` | no window, so nothing is ever unloaded for sitting idle |
+
+A budget is a ceiling on what may be held at once; this is independent of it,
+and answers a different question -- how long unused memory may be held. A
+machine with no budget still wants its memory back: an on-demand model nothing
+has asked for in longer than the window is unloaded, its endpoint stays up,
+and the next request for it loads it again. A resident is never a candidate,
+whatever the window.
+
+A model is held for **at most one and a half windows plus one sweep**,
+measured from when a request last *finished* rather than when it started --
+otherwise a generation longer than the window would be unloaded the instant it
+ended. This is measured with a monotonic clock, so it does not advance while
+the machine is suspended: a laptop that sleeps for eight hours wakes holding
+whatever it was holding when it slept.
+
 The server binary is located rather than bundled: `llama-server` is taken from
 the search path, with the platform's executable suffix, so no tracked file
 names one machine.
@@ -104,6 +125,7 @@ serving on http://127.0.0.1:8080
   http://127.0.0.1:8080/v1/chat/completions   (routed by the body's model)
 memory budget: 25000 MiB, so models are unloaded to make room
 residents reserve 4096 MiB of 25000 MiB, leaving 20904 MiB for everything else
+idle window: 3600 seconds, so an unused on-demand model is unloaded after that long
 a streamed reply is passed through as it arrives
 resident qwen3-4b loaded in 1.8 seconds
 ```

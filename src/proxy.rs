@@ -5,7 +5,7 @@
 //! OpenAI-compatible client already sends. `GET /v1/models` is answered from
 //! the catalog without starting anything.
 //!
-//! What a caller must know to use this correctly is six things.
+//! What a caller must know to use this correctly is seven things.
 //!
 //! [`Router::bind`] reserves the public port and returns immediately. Nothing
 //! is served and no child is started until [`Router::serve`] runs, so a caller
@@ -16,7 +16,8 @@
 //!
 //! [`Router::serve`] runs until the process ends. It does not return.
 //!
-//! [`Router::stop`] ends the children it started. This exists because a child
+//! [`Router::stop`] ends the children it started, and also ends idle
+//! unloading for the rest of this router's life. This exists because a child
 //! is a separate process and nothing in the operating system ties its lifetime
 //! to this one: a router that is never dropped -- which is every router whose
 //! `serve` is still running -- leaves its children alive after the process
@@ -25,11 +26,16 @@
 //! existed. A caller that ends without calling it leaves them behind, and a
 //! router ended by a signal never gets the chance to call it at all.
 //!
-//! [`Router::bind`] takes a memory budget, and that is the one argument here
-//! that can end a process. Under a budget, a request for a model that does not
-//! fit unloads the coldest idle one to make room; a model something is reading
-//! from is never chosen, and when the only room is held by one of those the
-//! request is refused instead. Without a budget nothing is ever unloaded.
+//! [`Router::bind`] takes [`Limits`](crate::idle::Limits): a memory budget and
+//! an idle window, configured independently, and together these are what can
+//! end a process with no caller asking to stop it. Under a budget, a request
+//! for a model that does not fit unloads the coldest idle one to make room; a
+//! model something is reading from is never chosen, and when the only room is
+//! held by one of those the request is refused instead. An idle window ends a
+//! process a different way: a background thread unloads an on-demand model
+//! nothing has asked for in longer than the window, with no request involved
+//! at all. Without a budget nothing is ever unloaded to make room; without a
+//! window nothing is ever unloaded for sitting idle.
 //!
 //! The router binds loopback only, as children do. Serving a network is a
 //! security design this repository has not written, and a caller that asks for
@@ -51,19 +57,22 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
-use crate::admission::Budget;
-use crate::catalog::{Catalog, Entry};
-use crate::launch::{Child, Failure, Server};
+use crate::catalog::Catalog;
+use crate::idle::{IdleWindow, Limits};
+use crate::launch::{Failure, Server};
 
 mod answer;
 mod body;
 mod endpoint;
 mod head;
 mod loaded;
+mod reaper;
 mod relay;
 mod residents;
+mod shared;
 mod slots;
 
+use reaper::Stop;
 use slots::Slots;
 
 /// The public listener, and everything a request needs to be answered.
@@ -85,6 +94,13 @@ struct Shared {
     /// caller that started serving, and "a resident that cannot load says so"
     /// is a claim that has to be assertable to be a guarantee.
     resident_failures: Mutex<Vec<String>>,
+    /// How long an on-demand, idle entry may go unused before the reaper
+    /// unloads it. `None` means the reaper is never spawned at all.
+    idle_window: IdleWindow,
+    /// Wakes the reaper the moment [`Router::stop`] is called. See
+    /// [`reaper::Stop`] for why a `Weak<Shared>` alone is not enough: the
+    /// test harness never drops a `Router`, so nothing would ever end it.
+    stop: Stop,
 }
 
 impl Router {
@@ -99,7 +115,7 @@ impl Router {
         catalog: Catalog,
         root: PathBuf,
         server: Server,
-        budget: Budget,
+        limits: Limits,
     ) -> Result<Self, Failure> {
         if !address.ip().is_loopback() {
             return Err(Failure::Unavailable(format!(
@@ -111,7 +127,7 @@ impl Router {
         let listener = TcpListener::bind(address)
             .map_err(|error| Failure::Unavailable(format!("cannot bind {address}: {error}")))?;
 
-        let slots = Slots::new(&catalog, budget);
+        let slots = Slots::new(&catalog, limits.budget);
 
         Ok(Self {
             listener,
@@ -121,6 +137,8 @@ impl Router {
                 server,
                 slots,
                 resident_failures: Mutex::new(Vec::new()),
+                idle_window: limits.idle_window,
+                stop: Stop::new(),
             }),
         })
     }
@@ -169,10 +187,17 @@ impl Router {
     /// it finishes, which is the behaviour a caller wants: this ends the
     /// router's claim on its children, not the answer somebody is reading.
     ///
+    /// Also ends idle unloading for the rest of this router's life: the
+    /// reaper thread, if one was ever spawned, exits the moment this signals
+    /// it rather than sleeping out its interval, and nothing here spawns a
+    /// replacement. A model that goes idle after this point is held until
+    /// something else unloads it.
+    ///
     /// The next request for an entry starts a fresh child, so this is safe to
     /// call on a router that goes on serving.
     pub fn stop(&self) {
         self.shared.slots.clear();
+        self.shared.stop.signal();
     }
 
     /// Accepts connections until the process ends.
@@ -199,6 +224,13 @@ impl Router {
         let loading = Arc::clone(&self.shared);
         thread::spawn(move || residents::load(&loading));
 
+        // No window, no thread -- a machine that has not asked for this pays
+        // nothing for it, not even a sleeping thread.
+        if self.shared.idle_window.duration().is_some() {
+            let reaping = Arc::downgrade(&self.shared);
+            thread::spawn(move || reaper::run(&reaping));
+        }
+
         for stream in self.listener.incoming().flatten() {
             let shared = Arc::clone(&self.shared);
             thread::spawn(move || {
@@ -207,28 +239,5 @@ impl Router {
                 drop(answer::to(&shared, stream));
             });
         }
-    }
-}
-
-impl Shared {
-    /// The child serving this entry, started if there is room for it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`Failure`] when a child cannot be started, does not become
-    /// ready, or is refused for want of room.
-    fn child(&self, entry: &Entry) -> Result<Arc<Child>, Failure> {
-        self.slots
-            .child(&self.catalog, entry, &self.server, &self.root)
-    }
-
-    /// What the catalog carries, for a refusal that can be acted on.
-    fn known(&self) -> String {
-        self.catalog
-            .entries
-            .iter()
-            .map(|entry| entry.id.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
     }
 }

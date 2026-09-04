@@ -37,6 +37,15 @@ resident models leave.
 Unloading an on-demand model to make room for another. Resident models are
 never candidates.
 
+**Idle window**:
+How long a loaded on-demand model may go unused before it is unloaded. A fact
+about one machine, absent by default.
+_Avoid_: timeout, expiry, time to live.
+
+**Reaper**:
+The thread that unloads models that have outlived the idle window. Named for
+what it does rather than when it runs.
+
 **Defaults table**:
 The settings entries inherit when they do not state their own. An entry
 overrides a default by setting the field; it cannot unset one.

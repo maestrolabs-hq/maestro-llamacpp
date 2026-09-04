@@ -15,13 +15,14 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-// Renamed: a slot holds a `Loaded`, and so does a decision. Two of them here
-// under one name is how a reader loses track of which is which.
-use crate::admission::{Budget, Decision, Loaded as Held};
+use crate::admission::{Budget, Decision};
 use crate::catalog::{Catalog, Entry};
 use crate::launch::{Child, Failure, Server};
 
-use super::loaded::{Loaded, Slot, busy, live_child, take_if_idle};
+use super::loaded::{Loaded, Slot, live_child, take_if_idle};
+
+mod sweep;
+mod view;
 
 /// Every entry's slot, and the budget they compete for.
 pub(super) struct Slots {
@@ -78,11 +79,6 @@ impl Slots {
         self.admit(catalog, entry, server, root)
     }
 
-    /// The identifiers of the entries holding a child, in catalog order.
-    pub(super) fn loaded_ids(&self, catalog: &Catalog) -> Vec<String> {
-        self.snapshot(catalog, |entry, _| entry.id.clone())
-    }
-
     /// Ends every child, and forgets them.
     pub(super) fn clear(&self) {
         for slot in self.by_id.values() {
@@ -97,7 +93,7 @@ impl Slots {
     /// If the entry is not in the catalog the slots were built from, which
     /// cannot happen: every caller reached this by looking the entry up in
     /// that same catalog.
-    fn slot(&self, id: &str) -> &Slot {
+    pub(super) fn slot(&self, id: &str) -> &Slot {
         self.by_id.get(id).expect("one slot per catalog entry")
     }
 
@@ -168,41 +164,6 @@ impl Slots {
         Ok(child)
     }
 
-    /// Every occupied slot, seen through `project`, in catalog order.
-    ///
-    /// Each slot is locked in turn, so this is a snapshot of several moments
-    /// rather than a reading of one. The admission lock holds it still against
-    /// other admissions and nothing else: the fast path takes no admission
-    /// lock, so an entry read as idle here can have a reader before the
-    /// decision reaches its slot. That is why [`Slots::unload`] reads the
-    /// signal again at the moment it acts instead of trusting this.
-    ///
-    /// `project` is handed a borrow and never an owned handle, which keeps
-    /// every caller clear of the slot invariant in [`super::loaded`] -- a rule
-    /// about where an `Arc` is cloned, which warns by name against listing
-    /// what is loaded by handing out references.
-    fn snapshot<T>(&self, catalog: &Catalog, project: impl Fn(&Entry, &Loaded) -> T) -> Vec<T> {
-        catalog
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                let slot = self
-                    .slot(&entry.id)
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                let held = slot.as_ref()?;
-                Some(project(entry, held))
-            })
-            .collect()
-    }
-
-    /// What is loaded now, as admission needs to see it.
-    fn held(&self, catalog: &Catalog) -> Vec<Held> {
-        self.snapshot(catalog, |entry, held| {
-            Held::of(entry, busy(&held.child), held.last_used)
-        })
-    }
-
     /// Unloads the named entries, or names the one that stopped it.
     ///
     /// Taking the `Loaded` out drops the router's `Arc`, and a child whose
@@ -211,7 +172,7 @@ impl Slots {
     /// something is put in it.
     ///
     /// Each is taken by [`take_if_idle`](super::loaded::take_if_idle), which
-    /// re-reads the busy signal for the reason [`Slots::snapshot`] records.
+    /// re-reads the busy signal for the reason [`Slots::held`] records.
     ///
     /// # Errors
     ///
@@ -223,7 +184,7 @@ impl Slots {
     /// rather than only that something is.
     fn unload<'a>(&self, ids: &'a [String]) -> Result<(), &'a str> {
         for id in ids {
-            if !take_if_idle(self.slot(id)) {
+            if !take_if_idle(self.slot(id), |_| true) {
                 return Err(id);
             }
         }

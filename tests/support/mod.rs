@@ -298,15 +298,41 @@ pub fn serving(catalog: &str, root: ModelsRoot) -> Serving {
 /// test rather than a failing one.
 #[must_use]
 pub fn budgeted(catalog: &str, root: ModelsRoot, limit_mib: Option<u32>) -> Serving {
+    windowed(catalog, root, limit_mib, Duration::ZERO)
+}
+
+/// The same, under a stated memory budget and a stated idle window.
+///
+/// A window is injected directly rather than through
+/// `MAESTRO_IDLE_UNLOAD_SECONDS`, for the same reason `budgeted` injects a
+/// ceiling instead of setting `MAESTRO_MEMORY_BUDGET_MIB`: that variable is
+/// process-global and would race every other test in this binary. Zero means
+/// off, exactly as `IdleWindow::new` treats it.
+///
+/// # Panics
+///
+/// If the catalog is not usable or the port cannot be bound, which is a broken
+/// test rather than a failing one.
+#[must_use]
+pub fn windowed(
+    catalog: &str,
+    root: ModelsRoot,
+    limit_mib: Option<u32>,
+    idle_window: Duration,
+) -> Serving {
     let parsed = maestro_llamacpp::catalog::Catalog::parse(catalog).expect("a usable catalog");
     let server = maestro_llamacpp::launch::Server::located(Some(&stub_binary()))
         .expect("the stub binary is built by cargo test");
+    let limits = maestro_llamacpp::idle::Limits::new(
+        maestro_llamacpp::admission::Budget::new(limit_mib),
+        maestro_llamacpp::idle::IdleWindow::new(idle_window),
+    );
     let router = maestro_llamacpp::proxy::Router::bind(
         "127.0.0.1:0".parse().expect("a loopback address"),
         parsed,
         root.path().to_path_buf(),
         server,
-        maestro_llamacpp::admission::Budget::new(limit_mib),
+        limits,
     )
     .expect("an ephemeral loopback port");
 

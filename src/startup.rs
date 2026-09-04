@@ -25,6 +25,24 @@ pub fn budget(limit_mib: Option<u32>) -> String {
     }
 }
 
+/// Whether anything will ever be unloaded for sitting idle.
+///
+/// Said at startup for the same reason [`budget`] is: an operator who set the
+/// variable and mistyped it would otherwise find out only by watching memory
+/// stay held.
+#[must_use]
+pub fn idle_window(seconds: Option<u64>) -> String {
+    match seconds {
+        Some(seconds) => format!(
+            "idle window: {seconds} seconds, so an unused on-demand model is \
+             unloaded after that long"
+        ),
+        None => "idle window: none set, so nothing is ever unloaded for \
+                 sitting idle (set MAESTRO_IDLE_UNLOAD_SECONDS)"
+            .to_owned(),
+    }
+}
+
 /// What the residents hold, and what that leaves for everything else.
 ///
 /// A resident is memory the router promises never to reclaim, so a ceiling
@@ -94,6 +112,19 @@ mod tests {
         );
         assert!(
             budget(None).contains("MAESTRO_MEMORY_BUDGET_MIB"),
+            "and when there is none, the variable to set -- a line saying \
+             only that nothing is evicted leaves the reader nowhere to go"
+        );
+    }
+
+    #[test]
+    fn the_idle_window_line_says_whether_anything_is_ever_unloaded_for_sitting_idle() {
+        assert!(
+            idle_window(Some(3600)).contains("3600"),
+            "the window, as configured"
+        );
+        assert!(
+            idle_window(None).contains("MAESTRO_IDLE_UNLOAD_SECONDS"),
             "and when there is none, the variable to set -- a line saying \
              only that nothing is evicted leaves the reader nowhere to go"
         );

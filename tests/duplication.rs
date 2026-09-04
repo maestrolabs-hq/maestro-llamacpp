@@ -78,6 +78,30 @@ const ACCEPTED: &[(&str, &str)] = &[
          things to read, and neither name would survive it.",
     ),
     (
+        "a_resident_older_than_the_window_is_not_named_beside_an_on_demand_one \
+         <-> a_busy_entry_older_than_the_window_is_not_named_beside_an_idle_one",
+        "The same shape as admission.rs's own accepted pair below, for the same \
+         reason and the same policy read through idle.rs instead: both call \
+         with_one_protected and assert the identical result, because the two \
+         rules -- residency and busyness -- differ only in which field \
+         protects an entry. Merging them would stop naming the two reasons a \
+         model is never a candidate for idle unloading.",
+    ),
+    (
+        "an_on_demand_entry_older_than_the_window_is_named_beside_a_younger_one \
+         <-> a_busy_entry_older_than_the_window_is_not_named_beside_an_idle_one",
+        "Both build a two-entry array and assert_eq the expired set, which is \
+         the whole shape any case in this file can take -- there is no less \
+         to write for either without a fixture that hides which two entries \
+         are compared and why. What differs is the property under test: one \
+         is the basic age comparison, the other a protection rule.",
+    ),
+    (
+        "an_on_demand_entry_older_than_the_window_is_named_beside_a_younger_one \
+         <-> a_resident_older_than_the_window_is_not_named_beside_an_on_demand_one",
+        "The same as the pair above, with the other protection rule.",
+    ),
+    (
         "start <-> spawn",
         "start is spawn plus the readiness loop, and delegates to it -- the \
          same relationship as optional and required above. What they share is \

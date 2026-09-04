@@ -8,7 +8,7 @@
 //! its own.
 
 use std::sync::{Condvar, Mutex, PoisonError, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::Shared;
 
@@ -17,6 +17,11 @@ use super::Shared;
 /// round second, so the timing guarantee -- at most one and a half windows
 /// plus one sweep -- holds for every window the configured variable can
 /// express.
+///
+/// Reachable only from [`IdleWindow::new`](crate::idle::IdleWindow::new): the
+/// whole-second `configured` a running router reads from the environment
+/// cannot express a window under two seconds, so only a test that builds its
+/// own window can drive the interval below this floor.
 const MIN_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Wakes the reaper the moment [`super::Router::stop`] is called, rather than
@@ -66,6 +71,13 @@ impl Stop {
 /// keep the router alive for as long as this thread runs, which is the leak
 /// this exists to avoid.
 pub(super) fn run(shared: &Weak<Shared>) {
+    // The previous tick's deadline rather than a fixed start: each one is
+    // computed as the last plus `interval`, so a sweep that takes real time
+    // does not push every later tick back by that much. Without this a sweep
+    // slow enough to matter would compound across the life of the thread
+    // rather than costing what it cost once.
+    let mut deadline: Option<Instant> = None;
+
     loop {
         let Some(strong) = shared.upgrade() else {
             return;
@@ -76,9 +88,14 @@ pub(super) fn run(shared: &Weak<Shared>) {
         };
         let interval = (duration / 2).max(MIN_INTERVAL);
 
-        if strong.stop.wait(interval) {
+        let next = deadline.unwrap_or_else(Instant::now) + interval;
+        if strong
+            .stop
+            .wait(next.saturating_duration_since(Instant::now()))
+        {
             return;
         }
+        deadline = Some(next);
 
         for id in strong
             .slots

@@ -181,6 +181,12 @@ impl Router {
     /// it finishes, which is the behaviour a caller wants: this ends the
     /// router's claim on its children, not the answer somebody is reading.
     ///
+    /// Also ends idle unloading for the rest of this router's life: the
+    /// reaper thread, if one was ever spawned, exits the moment this signals
+    /// it rather than sleeping out its interval, and nothing here spawns a
+    /// replacement. A model that goes idle after this point is held until
+    /// something else unloads it.
+    ///
     /// The next request for an entry starts a fresh child, so this is safe to
     /// call on a router that goes on serving.
     pub fn stop(&self) {

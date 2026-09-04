@@ -52,8 +52,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
 use crate::admission::Budget;
-use crate::catalog::{Catalog, Entry};
-use crate::launch::{Child, Failure, Server};
+use crate::catalog::Catalog;
+use crate::launch::{Failure, Server};
 
 mod answer;
 mod body;
@@ -207,28 +207,5 @@ impl Router {
                 drop(answer::to(&shared, stream));
             });
         }
-    }
-}
-
-impl Shared {
-    /// The child serving this entry, started if there is room for it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`Failure`] when a child cannot be started, does not become
-    /// ready, or is refused for want of room.
-    fn child(&self, entry: &Entry) -> Result<Arc<Child>, Failure> {
-        self.slots
-            .child(&self.catalog, entry, &self.server, &self.root)
-    }
-
-    /// What the catalog carries, for a refusal that can be acted on.
-    fn known(&self) -> String {
-        self.catalog
-            .entries
-            .iter()
-            .map(|entry| entry.id.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
     }
 }

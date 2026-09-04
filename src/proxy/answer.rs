@@ -14,7 +14,9 @@ use std::net::TcpStream;
 use super::endpoint::Endpoint;
 use super::head::Length;
 use super::{Shared, body, head, relay};
-use crate::launch::Failure;
+use crate::catalog::Entry;
+use crate::launch::{Child, Failure};
+use std::sync::Arc;
 
 /// Answers one connection.
 pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> {
@@ -191,6 +193,29 @@ fn refuse(stream: &mut TcpStream, status: u16, message: &str) -> std::io::Result
         _ => "Gateway Timeout",
     };
     reply(stream, status, reason, "text/plain", message)
+}
+
+impl Shared {
+    /// The child serving this entry, started if there is room for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`Failure`] when a child cannot be started, does not become
+    /// ready, or is refused for want of room.
+    pub(super) fn child(&self, entry: &Entry) -> Result<Arc<Child>, Failure> {
+        self.slots
+            .child(&self.catalog, entry, &self.server, &self.root)
+    }
+
+    /// What the catalog carries, for a refusal that can be acted on.
+    pub(super) fn known(&self) -> String {
+        self.catalog
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 /// Writes one reply the router authored, rather than one it relayed.

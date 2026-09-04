@@ -5,7 +5,7 @@
 //! OpenAI-compatible client already sends. `GET /v1/models` is answered from
 //! the catalog without starting anything.
 //!
-//! What a caller must know to use this correctly is six things.
+//! What a caller must know to use this correctly is seven things.
 //!
 //! [`Router::bind`] reserves the public port and returns immediately. Nothing
 //! is served and no child is started until [`Router::serve`] runs, so a caller
@@ -16,7 +16,8 @@
 //!
 //! [`Router::serve`] runs until the process ends. It does not return.
 //!
-//! [`Router::stop`] ends the children it started. This exists because a child
+//! [`Router::stop`] ends the children it started, and also ends idle
+//! unloading for the rest of this router's life. This exists because a child
 //! is a separate process and nothing in the operating system ties its lifetime
 //! to this one: a router that is never dropped -- which is every router whose
 //! `serve` is still running -- leaves its children alive after the process
@@ -25,11 +26,16 @@
 //! existed. A caller that ends without calling it leaves them behind, and a
 //! router ended by a signal never gets the chance to call it at all.
 //!
-//! [`Router::bind`] takes a memory budget, and that is the one argument here
-//! that can end a process. Under a budget, a request for a model that does not
-//! fit unloads the coldest idle one to make room; a model something is reading
-//! from is never chosen, and when the only room is held by one of those the
-//! request is refused instead. Without a budget nothing is ever unloaded.
+//! [`Router::bind`] takes [`Limits`](crate::idle::Limits): a memory budget and
+//! an idle window, configured independently, and together these are what can
+//! end a process with no caller asking to stop it. Under a budget, a request
+//! for a model that does not fit unloads the coldest idle one to make room; a
+//! model something is reading from is never chosen, and when the only room is
+//! held by one of those the request is refused instead. An idle window ends a
+//! process a different way: a background thread unloads an on-demand model
+//! nothing has asked for in longer than the window, with no request involved
+//! at all. Without a budget nothing is ever unloaded to make room; without a
+//! window nothing is ever unloaded for sitting idle.
 //!
 //! The router binds loopback only, as children do. Serving a network is a
 //! security design this repository has not written, and a caller that asks for

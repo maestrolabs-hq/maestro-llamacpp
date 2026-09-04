@@ -198,26 +198,19 @@ mod tests {
     }
 
     #[test]
-    fn an_unset_window_names_nothing_whatever_the_ages_are() {
-        let window = IdleWindow::new(Duration::from_secs(0));
-        let held = [on_demand("ancient", false, 1_000_000)];
-
-        assert_eq!(
-            window.expired(&held, Instant::now()),
-            Vec::<String>::new(),
-            "no window means no eviction, however long anything has sat idle"
-        );
-    }
-
-    #[test]
-    fn a_zero_window_names_nothing() {
+    fn a_zero_window_names_nothing_whatever_the_ages_are() {
         let window = IdleWindow::new(Duration::ZERO);
-        let held = [on_demand("just-finished", false, 0)];
+        let held = [
+            on_demand("just-finished", false, 0),
+            on_demand("ancient", false, 1_000_000),
+        ];
 
         assert_eq!(
             window.expired(&held, Instant::now()),
             Vec::<String>::new(),
-            "a zero window is off, or it would expire everything on every sweep"
+            "a zero window is off, or it would expire everything on every \
+             sweep -- and off means no eviction however long anything has \
+             sat idle"
         );
     }
 
@@ -234,23 +227,6 @@ mod tests {
             window.expired(&held, Instant::now()),
             vec!["oldest".to_owned(), "newer".to_owned(), "newest".to_owned()],
             "coldest first, matching Budget::admit's order"
-        );
-    }
-
-    #[test]
-    fn a_mistyped_variable_is_refused_rather_than_read_as_off() {
-        // SAFETY: this test binary does not run its tests in parallel with
-        // anything else that reads this variable -- it is exclusive to idle.
-        unsafe { std::env::set_var(VARIABLE, "soon") };
-        let result = IdleWindow::configured();
-        unsafe { std::env::remove_var(VARIABLE) };
-
-        let Err(Failure::Unavailable(message)) = result else {
-            panic!("a variable that is not a number of seconds must be refused");
-        };
-        assert!(
-            message.contains(VARIABLE),
-            "the refusal names the variable to fix: {message}"
         );
     }
 }

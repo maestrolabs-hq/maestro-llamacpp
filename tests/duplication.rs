@@ -111,6 +111,17 @@ const ACCEPTED: &[(&str, &str)] = &[
          inside the function that builds a process, and keeping those apart is \
          what makes either of them readable.",
     ),
+    (
+        "the_budget_line_says_whether_anything_is_ever_unloaded \
+         <-> the_idle_window_line_says_whether_anything_is_ever_unloaded_for_sitting_idle",
+        "Two startup lines, each asserting the same two-branch shape: the \
+         configured value appears when there is one, and the variable to set \
+         appears when there is not. That is the startup-reporting contract \
+         from `budget` and `idle_window` themselves, not duplication to \
+         remove -- the two functions report unrelated settings, and merging \
+         their tests would take the variable name and the configured value as \
+         parameters, saying nothing either name did not already say.",
+    ),
 ];
 
 /// `path:lines function name <-> path:lines function name` -> `name <-> name`.

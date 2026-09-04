@@ -116,4 +116,17 @@ mod tests {
              only that nothing is evicted leaves the reader nowhere to go"
         );
     }
+
+    #[test]
+    fn the_idle_window_line_says_whether_anything_is_ever_unloaded_for_sitting_idle() {
+        assert!(
+            idle_window(Some(3600)).contains("3600"),
+            "the window, as configured"
+        );
+        assert!(
+            idle_window(None).contains("MAESTRO_IDLE_UNLOAD_SECONDS"),
+            "and when there is none, the variable to set -- a line saying \
+             only that nothing is evicted leaves the reader nowhere to go"
+        );
+    }
 }

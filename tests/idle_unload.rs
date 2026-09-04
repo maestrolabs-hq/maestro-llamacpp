@@ -12,35 +12,37 @@
 //! binary. At most two children, and exactly one case here waits for a
 //! sweep.
 //!
-//! `WINDOW` is three seconds rather than the two hundred milliseconds an
-//! earlier version of this file used. A round trip through a real child --
-//! spawning it, on Windows roughly three times slower than on Linux, plus
-//! the request itself -- can itself take longer than two hundred
-//! milliseconds on a loaded Windows runner. A window that short raced that
-//! latency: two requests sent back to back, with no sleep between them,
-//! could already be more than one window apart by the time the second
-//! reached the router, so a live reaper reaped the model between them and a
-//! test asserting both landed on the same child failed -- correctly,
-//! against a window that was never wide enough to hold the platform's own
-//! overhead. Three seconds leaves that overhead comfortably inside a single
-//! window on every platform this suite runs on.
+//! Every assertion here is either eventual -- `settled`, waiting for a
+//! state that will arrive -- or a lower bound on when the reaper is allowed
+//! to act. Neither kind fails because a machine is slow. An earlier version
+//! of this file also asserted upper bounds: that a second request, sent
+//! straight after a first, would reach the router inside the window, and
+//! that a read of `loaded()` would land inside a fifty-millisecond margin
+//! of it. A loaded Windows runner stalled those threads for whole seconds
+//! and failed every such assertion, at a two-hundred-millisecond window and
+//! again at three seconds. There is no window wide enough for a machine
+//! that can pause a thread arbitrarily long, so no assertion here requires
+//! this test's own threads to win a race against the reaper.
+//!
+//! `WINDOW` is three seconds not to outlast the platform's latency but to
+//! keep the stamped-at-end proof discriminating: a `last_used` stamped at a
+//! request's start would surface as an unload within half a window of the
+//! stream ending, and half of three seconds is a margin that sweep timing
+//! and sleep overshoot cannot blur past the stream-plus-window floor.
 //!
 //! `QUICK_WINDOW` stays short, for the two tests that sleep a multiple of
 //! it to prove a *non*-event -- a resident or an unconfigured window never
 //! unloading. Multiplying `WINDOW` there instead would turn a fast proof
-//! into one lasting several seconds for no gain: neither test's assertion
-//! depends on the window being wide enough to survive real network
-//! latency, since neither sends a second request to race against.
+//! into one lasting several seconds for no gain.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod support;
 use support::{MODEL, ModelsRoot, get, post, request, settled, status, windowed};
 
-/// The window the tests that send a second request use, wide enough that a
-/// slow child spawn and an HTTP round trip on any platform this suite runs
-/// on cannot by themselves push two back-to-back requests a whole window
-/// apart.
+/// The window the unloading tests use. Its width buys discrimination for
+/// the stamped-at-end proof rather than safety margin against the platform:
+/// see the module prose.
 const WINDOW: Duration = Duration::from_secs(3);
 
 /// The window the two tests that sleep a multiple of it to prove a
@@ -50,20 +52,6 @@ const QUICK_WINDOW: Duration = Duration::from_millis(200);
 
 /// The resident's weights, beside the on-demand entry's.
 const RESIDENT_MODEL: &str = "cache/qwen/qwen3-4b.gguf";
-
-/// The address the child answering this request was reached on.
-///
-/// The stub reflects the `Host` it was given, which the relay rewrote to the
-/// child's own address. That is how a test learns a port the router never
-/// told anyone about, and it is what makes "this is the same child" or "a
-/// different one" observable rather than inferred from timing.
-fn child_endpoint(reply: &str) -> String {
-    reply
-        .lines()
-        .find_map(|line| line.strip_prefix("Host: "))
-        .expect("the echo carries the address the child was reached on")
-        .to_owned()
-}
 
 /// How many paced events the slow-stream case asks for, and how far apart.
 /// Their product -- five seconds -- clears `WINDOW` with two seconds to
@@ -126,25 +114,10 @@ fn an_on_demand_entry_idle_past_the_window_is_unloaded() {
     let reply = request(serving.address(), &get("/models/gemma3/v1/echo"));
     assert_eq!(status(&reply), Some(200), "the entry answers:\n{reply}");
 
-    // Proved by re-requesting rather than by reading loaded() right after the
-    // first reply: that read races a live reaper ticking every 100ms, and on
-    // a loaded machine the gap between the reply arriving and this line
-    // running is not bounded. A second request that reaches the same child
-    // is a fact about what actually served it, not an assumption about how
-    // fast the test thread runs.
-    let again = request(serving.address(), &get("/models/gemma3/v1/echo"));
-    assert_eq!(
-        status(&again),
-        Some(200),
-        "the same entry answers again:\n{again}"
-    );
-    assert_eq!(
-        child_endpoint(&again),
-        child_endpoint(&reply),
-        "the first request must not have made its own model look idle for \
-         the whole of its own duration"
-    );
-
+    // Eventual on purpose. Anything stronger -- reading loaded() before the
+    // window is out, or racing a second request against the reaper -- would
+    // assert that this thread acts inside the window, which a stalled
+    // runner refutes at any width. See the module prose.
     settled(&serving, "unloaded the idle entry", |s| {
         !s.loaded().iter().any(|id| id == "gemma3")
     });
@@ -166,32 +139,18 @@ fn the_next_request_for_an_unloaded_entry_is_answered_and_it_is_loaded_again() {
         !s.loaded().iter().any(|id| id == "gemma3")
     });
 
+    // A relayed 200 on the dedicated path is the proof of "loaded again":
+    // the router authors only refusals, so this echo had to come from a
+    // child, and a child had to be started for it -- settled just watched
+    // the previous one go. An earlier shape of this proof asserted which
+    // child through a third request, and that raced the reaper: the third
+    // request had to arrive inside the window, which a stalled runner
+    // refutes at any width.
     let second = request(serving.address(), &get("/models/gemma3/v1/echo"));
     assert_eq!(
         status(&second),
         Some(200),
         "the endpoint never went away, so a second request answers:\n{second}"
-    );
-
-    // Proved by re-requesting rather than by reading loaded() right after
-    // `second`, for the same reason as the sibling test above: that read
-    // races a live reaper, and the margin against a 200ms window is not one
-    // a loaded test machine can be trusted to keep. A third request reaching
-    // the same child `second` did is what "loaded again" actually means --
-    // the router did not stop serving the entry, which is what separates
-    // this from stopping the router.
-    let third = request(serving.address(), &get("/models/gemma3/v1/echo"));
-    assert_eq!(
-        status(&third),
-        Some(200),
-        "a third request answers:\n{third}"
-    );
-    assert_eq!(
-        child_endpoint(&third),
-        child_endpoint(&second),
-        "the model reloaded for the second request must not have been \
-         unloaded again before this one reached it: {:?}",
-        serving.loaded()
     );
 }
 
@@ -254,9 +213,10 @@ fn last_used_is_stamped_when_a_relay_ends_rather_than_when_it_started() {
     );
 
     // The relay outlasts the window: ten events half a second apart is five
-    // seconds of streaming against a three-second window. A last_used
-    // stamped at the request's start would already be well older than the
-    // window by the time this returns.
+    // seconds of streaming against a three-second window, so a last_used
+    // stamped at the request's start is already expired when the stream
+    // ends.
+    let started = Instant::now();
     let reply = request(
         serving.address(),
         &post(
@@ -266,27 +226,28 @@ fn last_used_is_stamped_when_a_relay_ends_rather_than_when_it_started() {
     );
     assert_eq!(status(&reply), Some(200), "the stream completes:\n{reply}");
 
-    // A pause short of the window, but past at least one sweep interval, so
-    // the reaper has had a chance to act on whatever `last_used` says. A
-    // last_used stamped at the request's start is already five seconds plus
-    // this pause old, far past the window; one stamped when the relay ended
-    // is only this pause old, still within it.
-    std::thread::sleep(
-        WINDOW
-            .checked_sub(Duration::from_millis(50))
-            .expect("WINDOW is longer than 50ms"),
-    );
-
-    assert!(
-        serving.loaded().iter().any(|id| id == "gemma3"),
-        "a relay that just finished must not look idle for the whole of its \
-         own duration: {:?}",
-        serving.loaded()
-    );
-
     settled(
         &serving,
         "unloaded the entry once it had actually gone idle",
         |s| !s.loaded().iter().any(|id| id == "gemma3"),
+    );
+
+    // The proof is a lower bound, which a slow machine can only widen. The
+    // stub sleeps its gap before every event, so the stream takes at least
+    // the events' product; a last_used stamped when the relay ended cannot
+    // expire until a whole window after that, so the unload settled just
+    // watched cannot land before stream plus window. One stamped at the
+    // request's start expires during the stream itself, and the first sweep
+    // after the relay releases the child -- within half a window -- unloads
+    // it, well under this floor.
+    let floor =
+        Duration::from_millis(u64::from(SLOW_STREAM_EVENTS) * u64::from(SLOW_STREAM_GAP_MS))
+            + WINDOW;
+    assert!(
+        started.elapsed() >= floor,
+        "the entry was unloaded {:?} after the streaming request began, \
+         before the {floor:?} its stream plus the window account for; \
+         last_used must have been stamped before the relay ended",
+        started.elapsed()
     );
 }

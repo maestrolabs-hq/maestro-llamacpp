@@ -61,38 +61,77 @@ impl Server {
 
     /// Starts one entry and returns once it is ready to answer.
     ///
+    /// Retries once when a spawn dies before a single connection to it ever
+    /// succeeded. `free_port` releases a port before the child binds it, and
+    /// under enough concurrent spawns something else takes it first; the
+    /// child then exits on its own first bind attempt, having never been
+    /// reachable at all. That is not a model that failed to load -- it is
+    /// this launcher losing a race with itself -- and one retry on a fresh
+    /// port is the honest fix, because `free_port`'s race cannot be closed at
+    /// the source: `llama-server` binds the port itself from `--port`, so
+    /// there is no listener this caller could hand it instead.
+    ///
     /// # Errors
     ///
     /// Returns a [`Failure`] naming the entry when its model file is missing,
-    /// when the child exits while loading, or when it does not become ready
-    /// inside the entry's startup budget.
+    /// when the child exits while loading (on the second attempt if the
+    /// first was a lost race), or when it does not become ready inside the
+    /// entry's startup budget.
     pub fn start(&self, entry: &Entry, root: &Path) -> Result<Child, Failure> {
-        let mut child = self.spawn(entry, root)?;
+        match self.attempt(entry, root) {
+            Err((_, lost_the_race)) if lost_the_race => {
+                self.attempt(entry, root).map_err(|(failure, _)| failure)
+            }
+            Err((failure, _)) => Err(failure),
+            Ok(child) => Ok(child),
+        }
+    }
 
-        // Readiness and liveness are different questions and both are asked on
-        // every pass. Liveness first: a child that died while loading is
-        // reported with its status immediately, rather than waiting out a
-        // budget that a dead process can never satisfy.
+    /// One spawn, polled until it answers, dies, or exhausts its budget.
+    ///
+    /// The second element of an error is whether the child died without ever
+    /// answering a single health probe -- the signature `start` retries on.
+    /// A process is reported alive on the very first liveness check
+    /// regardless of what it goes on to do, since that check runs as soon as
+    /// `spawn` returns and a just-exec'd process has not yet had a chance to
+    /// fail; liveness alone cannot tell a lost port race from a child that
+    /// ran for a while and then genuinely crashed. Whether a probe ever
+    /// connected can, because a child that lost the race never bound the
+    /// port at all.
+    fn attempt(&self, entry: &Entry, root: &Path) -> Result<Child, (Failure, bool)> {
+        let mut child = self
+            .spawn(entry, root)
+            .map_err(|failure| (failure, false))?;
+
         let budget = Duration::from_secs(u64::from(entry.startup_timeout_seconds));
         let started = Instant::now();
+        let mut ever_connected = false;
         loop {
             if let Liveness::Exited(status) = child.check() {
-                return Err(Failure::Unavailable(format!(
-                    "entry '{}': the server exited while loading ({status})",
-                    child.id
-                )));
+                return Err((
+                    Failure::Unavailable(format!(
+                        "entry '{}': the server exited while loading ({status})",
+                        child.id
+                    )),
+                    !ever_connected,
+                ));
             }
-            if probe::health(child.address) == Some(200) {
-                return Ok(child);
+            match probe::health(child.address) {
+                Some(200) => return Ok(child),
+                Some(_) => ever_connected = true,
+                None => {}
             }
             if started.elapsed() >= budget {
                 // Killed before reporting, so a failed start leaves nothing
                 // behind holding a port.
                 child.stop();
-                return Err(Failure::NotReady(format!(
-                    "entry '{}': not ready within its startup budget of {} seconds",
-                    child.id, entry.startup_timeout_seconds
-                )));
+                return Err((
+                    Failure::NotReady(format!(
+                        "entry '{}': not ready within its startup budget of {} seconds",
+                        child.id, entry.startup_timeout_seconds
+                    )),
+                    false,
+                ));
             }
             std::thread::sleep(POLL_INTERVAL);
         }

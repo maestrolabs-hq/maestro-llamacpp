@@ -223,7 +223,7 @@ impl Slots {
     /// rather than only that something is.
     fn unload<'a>(&self, ids: &'a [String]) -> Result<(), &'a str> {
         for id in ids {
-            if !take_if_idle(self.slot(id)) {
+            if !take_if_idle(self.slot(id), |_| true) {
                 return Err(id);
             }
         }

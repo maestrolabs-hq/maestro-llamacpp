@@ -105,7 +105,8 @@ pub(super) fn live_child(slot: &Slot) -> Option<Arc<Child>> {
     Some(Arc::clone(&held.child))
 }
 
-/// Empties a slot, unless something started reading from what is in it.
+/// Empties a slot, unless something started reading from what is in it or the
+/// caller's own condition refuses it.
 ///
 /// The moment the busy signal stops being reversible, which is why it is read
 /// here rather than trusted from the snapshot a decision was made against. A
@@ -115,14 +116,26 @@ pub(super) fn live_child(slot: &Slot) -> Option<Arc<Child>> {
 /// process running that nothing accounts for, and the router would go over the
 /// budget it believes it is keeping.
 ///
+/// The same hazard applies to any other signal a caller wants to act on. The
+/// idle reaper narrows on `last_used`, and a snapshot's `last_used` is exactly
+/// as stale as its busy signal -- for a policy whose whole question is
+/// freshness, that staleness cannot be trusted either.
+///
+/// `also` is checked in addition to the hard-coded busy check, never instead
+/// of it: a caller may only narrow what is takeable, never widen it. Budget
+/// eviction supplies `|_| true`, so its behaviour is exactly what it was
+/// before this took a second argument.
+///
 /// Returns `false` and leaves the slot exactly as it was when the child is
-/// busy. An empty slot is nothing to take and counts as taken.
-pub(super) fn take_if_idle<C>(slot: &Slot<C>) -> bool {
+/// busy or `also` refuses it. An empty slot is nothing to take and counts as
+/// taken.
+pub(super) fn take_if_idle<C>(slot: &Slot<C>, also: impl FnOnce(&Loaded<C>) -> bool) -> bool {
     let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
     match slot.as_ref() {
-        // Somebody started reading after the snapshot was taken, so this room
-        // is not the decision's to give away.
-        Some(held) if busy(&held.child) => false,
+        // Somebody started reading after the snapshot was taken, or the
+        // caller's own condition no longer holds -- either way this room is
+        // not the decision's to give away.
+        Some(held) if busy(&held.child) || !also(held) => false,
         _ => {
             slot.take();
             true
@@ -133,6 +146,7 @@ pub(super) fn take_if_idle<C>(slot: &Slot<C>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     /// A slot holding one handle, as a loaded entry does.
     ///
@@ -155,7 +169,7 @@ mod tests {
         let (slot, reader) = occupied();
 
         assert!(
-            !take_if_idle(&slot),
+            !take_if_idle(&slot, |_| true),
             "a child somebody is reading from is not the decision's to take"
         );
         assert!(
@@ -170,10 +184,30 @@ mod tests {
         let (slot, reader) = occupied();
         drop(reader);
 
-        assert!(take_if_idle(&slot), "an idle child is taken");
+        assert!(take_if_idle(&slot, |_| true), "an idle child is taken");
         assert!(
             slot.lock().expect("an unpoisoned slot").is_none(),
             "and the slot is empty, which is what makes the room real"
+        );
+    }
+
+    #[test]
+    fn a_slot_whose_child_was_used_after_the_cutoff_is_refused_and_left_as_it_was() {
+        let (slot, reader) = occupied();
+        drop(reader);
+
+        let cutoff = Instant::now()
+            .checked_sub(Duration::from_secs(60))
+            .expect("a process that has run for less than the test ages");
+
+        assert!(
+            !take_if_idle(&slot, |held| held.last_used <= cutoff),
+            "used after the cutoff, so the caller's additional condition \
+             refuses it even though nothing is reading from it"
+        );
+        assert!(
+            slot.lock().expect("an unpoisoned slot").is_some(),
+            "and the slot still holds it"
         );
     }
 }

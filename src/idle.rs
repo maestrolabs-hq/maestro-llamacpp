@@ -73,6 +73,15 @@ impl IdleWindow {
         self.0
     }
 
+    /// The configured window in whole seconds, or none when it is off.
+    ///
+    /// Read by the command that starts the router, which says at startup
+    /// whether anything will ever be unloaded for sitting idle.
+    #[must_use]
+    pub fn seconds(&self) -> Option<u64> {
+        self.0.map(|duration| duration.as_secs())
+    }
+
     /// The identifiers to unload, coldest first.
     ///
     /// On-demand, not busy, and unused for at least the window. Coldest

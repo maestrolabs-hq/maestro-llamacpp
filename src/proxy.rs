@@ -51,8 +51,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
-use crate::admission::Budget;
 use crate::catalog::Catalog;
+use crate::idle::{IdleWindow, Limits};
 use crate::launch::{Failure, Server};
 
 mod answer;
@@ -60,10 +60,12 @@ mod body;
 mod endpoint;
 mod head;
 mod loaded;
+mod reaper;
 mod relay;
 mod residents;
 mod slots;
 
+use reaper::Stop;
 use slots::Slots;
 
 /// The public listener, and everything a request needs to be answered.
@@ -85,6 +87,13 @@ struct Shared {
     /// caller that started serving, and "a resident that cannot load says so"
     /// is a claim that has to be assertable to be a guarantee.
     resident_failures: Mutex<Vec<String>>,
+    /// How long an on-demand, idle entry may go unused before the reaper
+    /// unloads it. `None` means the reaper is never spawned at all.
+    idle_window: IdleWindow,
+    /// Wakes the reaper the moment [`Router::stop`] is called. See
+    /// [`reaper::Stop`] for why a `Weak<Shared>` alone is not enough: the
+    /// test harness never drops a `Router`, so nothing would ever end it.
+    stop: Stop,
 }
 
 impl Router {
@@ -99,7 +108,7 @@ impl Router {
         catalog: Catalog,
         root: PathBuf,
         server: Server,
-        budget: Budget,
+        limits: Limits,
     ) -> Result<Self, Failure> {
         if !address.ip().is_loopback() {
             return Err(Failure::Unavailable(format!(
@@ -111,7 +120,7 @@ impl Router {
         let listener = TcpListener::bind(address)
             .map_err(|error| Failure::Unavailable(format!("cannot bind {address}: {error}")))?;
 
-        let slots = Slots::new(&catalog, budget);
+        let slots = Slots::new(&catalog, limits.budget);
 
         Ok(Self {
             listener,
@@ -121,6 +130,8 @@ impl Router {
                 server,
                 slots,
                 resident_failures: Mutex::new(Vec::new()),
+                idle_window: limits.idle_window,
+                stop: Stop::new(),
             }),
         })
     }
@@ -173,6 +184,7 @@ impl Router {
     /// call on a router that goes on serving.
     pub fn stop(&self) {
         self.shared.slots.clear();
+        self.shared.stop.signal();
     }
 
     /// Accepts connections until the process ends.
@@ -198,6 +210,13 @@ impl Router {
     pub fn serve(&self) {
         let loading = Arc::clone(&self.shared);
         thread::spawn(move || residents::load(&loading));
+
+        // No window, no thread -- a machine that has not asked for this pays
+        // nothing for it, not even a sleeping thread.
+        if self.shared.idle_window.duration().is_some() {
+            let reaping = Arc::downgrade(&self.shared);
+            thread::spawn(move || reaper::run(&reaping));
+        }
 
         for stream in self.listener.incoming().flatten() {
             let shared = Arc::clone(&self.shared);

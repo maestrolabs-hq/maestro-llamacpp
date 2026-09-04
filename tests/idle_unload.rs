@@ -23,6 +23,20 @@ const WINDOW: Duration = Duration::from_millis(200);
 /// The resident's weights, beside the on-demand entry's.
 const RESIDENT_MODEL: &str = "cache/qwen/qwen3-4b.gguf";
 
+/// The address the child answering this request was reached on.
+///
+/// The stub reflects the `Host` it was given, which the relay rewrote to the
+/// child's own address. That is how a test learns a port the router never
+/// told anyone about, and it is what makes "this is the same child" or "a
+/// different one" observable rather than inferred from timing.
+fn child_endpoint(reply: &str) -> String {
+    reply
+        .lines()
+        .find_map(|line| line.strip_prefix("Host: "))
+        .expect("the echo carries the address the child was reached on")
+        .to_owned()
+}
+
 /// How many paced events the slow-stream case asks for, and how far apart.
 /// Their product outlasts `WINDOW`, so a `last_used` stamped at the request's
 /// start would already be older than the window by the time it returns.
@@ -81,7 +95,25 @@ fn an_on_demand_entry_idle_past_the_window_is_unloaded() {
 
     let reply = request(serving.address(), &get("/models/gemma3/v1/echo"));
     assert_eq!(status(&reply), Some(200), "the entry answers:\n{reply}");
-    assert!(serving.loaded().iter().any(|id| id == "gemma3"));
+
+    // Proved by re-requesting rather than by reading loaded() right after the
+    // first reply: that read races a live reaper ticking every 100ms, and on
+    // a loaded machine the gap between the reply arriving and this line
+    // running is not bounded. A second request that reaches the same child
+    // is a fact about what actually served it, not an assumption about how
+    // fast the test thread runs.
+    let again = request(serving.address(), &get("/models/gemma3/v1/echo"));
+    assert_eq!(
+        status(&again),
+        Some(200),
+        "the same entry answers again:\n{again}"
+    );
+    assert_eq!(
+        child_endpoint(&again),
+        child_endpoint(&reply),
+        "the first request must not have made its own model look idle for \
+         the whole of its own duration"
+    );
 
     settled(&serving, "unloaded the idle entry", |s| {
         !s.loaded().iter().any(|id| id == "gemma3")
@@ -110,10 +142,25 @@ fn the_next_request_for_an_unloaded_entry_is_answered_and_it_is_loaded_again() {
         Some(200),
         "the endpoint never went away, so a second request answers:\n{second}"
     );
-    assert!(
-        serving.loaded().iter().any(|id| id == "gemma3"),
-        "and it is loaded again, which is what separates this from stopping \
-         the router: {:?}",
+
+    // Proved by re-requesting rather than by reading loaded() right after
+    // `second`, for the same reason as the sibling test above: that read
+    // races a live reaper, and the margin against a 200ms window is not one
+    // a loaded test machine can be trusted to keep. A third request reaching
+    // the same child `second` did is what "loaded again" actually means --
+    // the router did not stop serving the entry, which is what separates
+    // this from stopping the router.
+    let third = request(serving.address(), &get("/models/gemma3/v1/echo"));
+    assert_eq!(
+        status(&third),
+        Some(200),
+        "a third request answers:\n{third}"
+    );
+    assert_eq!(
+        child_endpoint(&third),
+        child_endpoint(&second),
+        "the model reloaded for the second request must not have been \
+         unloaded again before this one reached it: {:?}",
         serving.loaded()
     );
 }

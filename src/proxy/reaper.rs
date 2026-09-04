@@ -88,3 +88,45 @@ pub(super) fn run(shared: &Weak<Shared>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    /// The mechanism decision 7 depends on: a wait ends the moment `signal`
+    /// is called, rather than only once its timeout elapses. Proven with the
+    /// primitive alone, with no `Shared`, no catalog and no process --
+    /// `run`'s loop is only ever this wait plus an upgrade and a sweep, and
+    /// the promptness the plan requires lives entirely here.
+    #[test]
+    fn a_wait_ends_the_moment_signal_is_called_rather_than_at_its_timeout() {
+        let stop = Arc::new(Stop::new());
+        let signalling = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            signalling.signal();
+        });
+
+        let started = Instant::now();
+        let signalled = stop.wait(Duration::from_secs(10));
+
+        assert!(signalled, "the wait must report that it was signalled");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a reaper configured with a long window must still end at once \
+             when stop is called, rather than sleeping out its interval: \
+             waited {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The other half of the same guarantee: nothing waiting must be told
+    /// stop happened when it did not.
+    #[test]
+    fn a_wait_that_times_out_reports_no_signal() {
+        let stop = Stop::new();
+        assert!(!stop.wait(Duration::from_millis(20)));
+    }
+}

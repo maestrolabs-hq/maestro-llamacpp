@@ -146,4 +146,74 @@ mod tests {
         let stop = Stop::new();
         assert!(!stop.wait(Duration::from_millis(20)));
     }
+
+    /// The integrated claim rather than the primitive alone: a real `run`
+    /// loop, spawned on its own thread against a real `Shared`, ends the
+    /// moment `Stop::signal` is called rather than sleeping out its
+    /// configured interval.
+    ///
+    /// The window is ten minutes, which makes the derived interval far
+    /// longer than this test's own patience -- a `run` that only reacted to
+    /// its next scheduled tick would make this test hang rather than fail an
+    /// assertion. Nothing here starts a process: the catalog's one entry is
+    /// never requested, so `Server` is never asked to spawn anything and its
+    /// binary path only has to exist, not run.
+    #[test]
+    fn a_live_reaper_ends_promptly_when_stop_is_signalled_rather_than_at_its_scheduled_sweep() {
+        use crate::admission::Budget;
+        use crate::catalog::Catalog;
+        use crate::idle::IdleWindow;
+        use crate::launch::Server;
+        use std::path::PathBuf;
+        use std::sync::Mutex;
+
+        let catalog = Catalog::parse(
+            "version = 1\n\
+             \n\
+             [defaults]\n\
+             context_size = 4096\n\
+             residency = \"on-demand\"\n\
+             memory_estimate_mib = 512\n\
+             startup_timeout_seconds = 30\n\
+             \n\
+             [models.gemma3]\n\
+             path = \"unused\"\n",
+        )
+        .expect("a usable catalog");
+        let server = Server::located(Some(
+            &std::env::current_exe().expect("this test binary's own path"),
+        ))
+        .expect("this test binary's own path is a file");
+        let slots = super::super::slots::Slots::new(&catalog, Budget::new(None));
+
+        let shared = Arc::new(Shared {
+            catalog,
+            root: PathBuf::from("/tmp"),
+            server,
+            slots,
+            resident_failures: Mutex::new(Vec::new()),
+            idle_window: IdleWindow::new(Duration::from_secs(600)),
+            stop: Stop::new(),
+        });
+
+        let weak = Arc::downgrade(&shared);
+        let reaping = std::thread::spawn(move || run(&weak));
+
+        // A brief pause, so the reaper has actually entered its wait before
+        // this signals it -- a signal that arrived before the wait began
+        // would prove nothing about promptness.
+        std::thread::sleep(Duration::from_millis(50));
+
+        let started = Instant::now();
+        shared.stop.signal();
+        reaping.join().expect("the reaper thread does not panic");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a reaper configured with a ten-minute sweep interval must still \
+             end within moments of stop being signalled, rather than \
+             sleeping out its interval: waited {:?}",
+            started.elapsed()
+        );
+    }
 }

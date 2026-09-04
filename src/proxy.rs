@@ -63,6 +63,7 @@ mod loaded;
 mod reaper;
 mod relay;
 mod residents;
+mod shared;
 mod slots;
 
 use reaper::Stop;

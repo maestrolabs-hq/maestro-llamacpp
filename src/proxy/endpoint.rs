@@ -10,7 +10,7 @@
 //! process, no catalog. Whether the model a shape names actually exists is the
 //! caller's question, asked against the catalog after this has answered.
 
-use crate::launch::Failure;
+use super::refusal::{Cause, Refusal};
 
 /// The path shape a dedicated endpoint carries.
 const DEDICATED: &str = "/models/";
@@ -37,9 +37,9 @@ impl Endpoint {
     ///
     /// # Errors
     ///
-    /// Returns a [`Failure`] when the path is neither shape, or when it names
+    /// Returns a [`Refusal`] when the path is neither shape, or when it names
     /// a model with nothing after it.
-    pub(super) fn of(path: &str) -> Result<Self, Failure> {
+    pub(super) fn of(path: &str) -> Result<Self, Refusal> {
         if let Some(rest) = path.strip_prefix(DEDICATED) {
             return match rest.split_once('/') {
                 Some((id, suffix)) if !id.is_empty() && !suffix.is_empty() => Ok(Self::Dedicated {
@@ -55,9 +55,11 @@ impl Endpoint {
 
         // Before the generic shape, because the listing sits inside it and is
         // answered from the catalog rather than by a child. Trailing slashes
-        // are the same request: a client that adds one is not asking for
-        // something else.
-        if path.trim_end_matches('/') == LISTING {
+        // and a query are the same request: a client that adds either is not
+        // asking for something else, and a client library that pages its
+        // model list adds a query without being asked.
+        let bare = path.split('?').next().unwrap_or(path);
+        if bare.trim_end_matches('/') == LISTING {
             return Ok(Self::Listing);
         }
 
@@ -71,6 +73,25 @@ impl Endpoint {
             "'{path}' is not a path this router serves: the shapes are \
              {DEDICATED}<model>/<path> and {GENERIC}<path>"
         )))
+    }
+
+    /// The methods this endpoint answers, as an `Allow` header says them.
+    ///
+    /// A model is asked something with `POST`, and asked about itself with
+    /// `GET`; the listing is read, and `HEAD` reads its head. Everything
+    /// else is refused before a child is involved, because the only thing a
+    /// stray `DELETE` under a model prefix could do is start a model that
+    /// then answers 404, which is a load nobody asked for.
+    pub(super) fn allowed(&self) -> &'static str {
+        match self {
+            Self::Listing => "GET, HEAD, OPTIONS",
+            Self::Dedicated { .. } | Self::Generic { .. } => "GET, POST, OPTIONS",
+        }
+    }
+
+    /// Whether a method is one this endpoint answers.
+    pub(super) fn allows(&self, method: &str) -> bool {
+        self.allowed().split(", ").any(|allowed| allowed == method)
     }
 
     /// What the child is asked for.
@@ -90,8 +111,8 @@ impl Endpoint {
 }
 
 /// A request this router does not serve, and the shapes of the ones it does.
-fn malformed(reason: &str) -> Failure {
-    Failure::Unavailable(reason.to_owned())
+fn malformed(reason: &str) -> Refusal {
+    Refusal::new(Cause::PathNotFound, reason)
 }
 
 #[cfg(test)]
@@ -123,13 +144,41 @@ mod tests {
 
     #[test]
     fn the_models_listing_is_answered_by_the_router_itself() {
-        for path in [LISTING, "/v1/models/"] {
+        for path in [LISTING, "/v1/models/", "/v1/models?limit=100"] {
             assert_eq!(
                 Endpoint::of(path).expect("a listing"),
                 Endpoint::Listing,
                 "'{path}' lists the catalog, which needs no child"
             );
         }
+    }
+
+    #[test]
+    fn a_query_stays_on_a_path_a_child_answers() {
+        let dedicated = Endpoint::of("/models/gemma3/v1/chat/completions?x=1").expect("dedicated");
+
+        assert_eq!(
+            dedicated.suffix(),
+            "/v1/chat/completions?x=1",
+            "only the listing is the router's to read; what a child is asked \
+             for is the caller's own path, query and all"
+        );
+    }
+
+    #[test]
+    fn only_the_methods_a_model_can_be_asked_with_are_allowed() {
+        let dedicated = Endpoint::of("/models/gemma3/v1/chat/completions").expect("dedicated");
+
+        assert!(dedicated.allows("POST") && dedicated.allows("GET"));
+        assert!(
+            !dedicated.allows("DELETE") && !dedicated.allows("HEAD"),
+            "a method that could not be an inference is refused before a \
+             child is started for it"
+        );
+        assert!(
+            Endpoint::Listing.allows("HEAD") && !Endpoint::Listing.allows("POST"),
+            "the listing is read, never asked"
+        );
     }
 
     #[test]

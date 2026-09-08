@@ -143,7 +143,7 @@ impl Slots {
             Decision::Fits => {}
             Decision::Unload(ids) => {
                 if let Err(blocker) = self.unload(&ids) {
-                    return Err(Failure::Refused(format!(
+                    return Err(Failure::Contended(format!(
                         "'{}' needs room held by '{blocker}', which a request \
                          reached first; this may succeed on a retry",
                         entry.id

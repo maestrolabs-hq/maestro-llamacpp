@@ -112,6 +112,15 @@ const ACCEPTED: &[(&str, &str)] = &[
          what makes either of them readable.",
     ),
     (
+        "allowed <-> suffix",
+        "Two questions asked of the same three endpoint shapes, each answered \
+         per shape with a match: which methods an endpoint accepts, and what \
+         the child is asked for. The shared structure is the enum they both \
+         read. Merging them would be one method taking which question to \
+         answer as a parameter, and the two answers have nothing in common \
+         but the variants they are keyed on.",
+    ),
+    (
         "the_budget_line_says_whether_anything_is_ever_unloaded \
          <-> the_idle_window_line_says_whether_anything_is_ever_unloaded_for_sitting_idle",
         "Two startup lines, each asserting the same two-branch shape: the \

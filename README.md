@@ -172,7 +172,16 @@ curl --no-buffer http://127.0.0.1:8080/v1/chat/completions \
 ```
 
 The path is passed to the child unchanged, and `GET /v1/models` lists the
-catalog's entries without starting anything.
+catalog's entries without starting anything. `HEAD /v1/models` answers with
+the listing's headers and no body, and a query string on the listing is still
+the listing, because a client library that pages its model list adds one.
+
+Only `GET` and `POST` reach a child. A preflight (`OPTIONS`) is answered by
+the router itself -- `204`, an `Allow` header, and permissive
+`Access-Control-Allow-*` headers, which is safe because the router binds
+loopback only -- and never starts a model. Any other method under a model
+prefix is refused with `405` before a child is involved, because the only
+thing forwarding it could achieve is a load that then answers `404`.
 
 Reading the body costs the response nothing. The router parses the request to
 learn which model answers; the reply is still copied byte for byte, and both
@@ -255,20 +264,36 @@ is forwarded is still the caller's own bytes.
 A caller that hangs up mid-answer closes the connection to the child, which is
 how `llama-server` is told to stop generating.
 
-Nine refusals happen before anything is forwarded, and each names what it was
-about:
+Every refusal happens before anything is forwarded, and is the JSON envelope
+an OpenAI-compatible client already parses:
 
-| Cause | Answer |
-| --- | --- |
-| the path names no entry the catalog carries | `404`, listing what it does carry |
-| the request body announces chunked framing | `501`; send a body with a `Content-Length` |
-| the child cannot be started | `502`, with the reason from the launcher |
-| the child misses its startup budget | `504`, naming the budget |
-| the body names no model, on the generic endpoint | `400`, saying which endpoint needs none |
-| the body is larger than the router will read | `413`, naming both sizes |
-| the `Content-Length` will not parse | `400`, quoting back what arrived |
-| the generic endpoint is sent no declared body | `411`, naming the header it wanted |
-| nothing can be unloaded to make room | `503`, naming what is holding the memory |
+```json
+{"error":{"message":"no model called 'nowhere'; this catalog carries: gemma3","type":"invalid_request_error","code":"model_not_found"}}
+```
+
+The status and the `code` are fixed by the cause, so a program switches on
+those and never on prose; the `message` is for the reader and may be reworded.
+`type` is `invalid_request_error` for a `4xx` and `server_error` for a `5xx`.
+`Retry-After` is sent exactly when waiting changes the answer.
+
+| Cause | Status | `code` |
+| --- | --- | --- |
+| the head cannot be read as a request | `400` | `malformed_request` |
+| the head is larger than the router will read | `431` | `request_head_too_large` |
+| the path is no shape the router serves | `404` | `path_not_found` |
+| the path or body names no entry the catalog carries | `404`, listing what it does carry | `model_not_found` |
+| the method is none a model is asked anything with | `405`, with `Allow` | `method_not_allowed` |
+| the request body announces chunked framing | `501`; send a body with a `Content-Length` | `chunked_body_not_implemented` |
+| the `Content-Length` will not parse | `400`, quoting back what arrived | `malformed_content_length` |
+| the generic endpoint is sent no declared body | `411`, naming the header it wanted | `content_length_required` |
+| the body is larger than the router will read | `413`, naming both sizes | `body_too_large` |
+| the body ends before its declared length | `400` | `body_incomplete` |
+| the body is not JSON | `400` | `body_not_json` |
+| the body names no model, on the generic endpoint | `400`, saying which endpoint needs none | `model_missing` |
+| the child cannot be started | `502`, with the reason from the launcher | `child_unavailable` |
+| the child misses its startup budget | `504`, naming the budget | `startup_timeout` |
+| the room is held by a request that reached it first | `503`, with `Retry-After` | `room_contended` |
+| nothing can be unloaded to make room | `503`, naming what is holding the memory | `insufficient_room` |
 
 Once a response has begun there is no status left to send, so a failure after
 that point closes the connection rather than pretending it can still answer.

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crate::catalog::Catalog;
 use crate::idle::IdleWindow;
 
-use super::super::loaded::take_if_idle;
+use super::super::loaded::{Take, take_if_idle};
 use super::Slots;
 
 impl Slots {
@@ -28,6 +28,11 @@ impl Slots {
     /// Takes no admission lock: this only ever removes, so a concurrent
     /// `admit` that snapshotted before this ran simply finds more room than
     /// it counted on, which is conservative rather than wrong.
+    ///
+    /// Only what was actually taken is named. A slot found empty -- emptied
+    /// by an admission between the snapshot and the take -- is not an unload
+    /// this performed, and reporting it as one would be reporting a decision
+    /// rather than an outcome.
     pub(in super::super) fn sweep_idle(
         &self,
         catalog: &Catalog,
@@ -41,7 +46,17 @@ impl Slots {
         window
             .expired(&self.held(catalog), now)
             .into_iter()
-            .filter(|id| take_if_idle(self.slot(id), |held| stale(now, held.last_used, duration)))
+            .filter(|id| {
+                match take_if_idle(self.slot(id), |held| stale(now, held.last_used, duration)) {
+                    // Dropped here, with the slot's guard already released:
+                    // a kill that hangs stalls this sweep and nothing else.
+                    Take::Taken(child) => {
+                        drop(child);
+                        true
+                    }
+                    Take::Busy | Take::Empty => false,
+                }
+            })
             .collect()
     }
 

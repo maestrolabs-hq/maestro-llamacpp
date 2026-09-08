@@ -18,7 +18,7 @@ use crate::admission::{Budget, Decision, Wanted};
 use crate::catalog::{Catalog, Entry};
 use crate::launch::{Child, Failure, Server};
 
-use super::loaded::{Slot, live_child, take_if_idle};
+use super::loaded::{Slot, Take, live_child, take_if_idle};
 
 mod start;
 mod sweep;
@@ -82,10 +82,17 @@ impl Slots {
     }
 
     /// Ends every child, and forgets them.
+    ///
+    /// Every slot is emptied first and the children dropped afterwards, so
+    /// no slot's guard is held while a process is being killed and waited
+    /// for -- the same rule [`take_if_idle`] keeps, for the same reason.
     pub(super) fn clear(&self) {
-        for slot in self.by_id.values() {
-            slot.lock().unwrap_or_else(PoisonError::into_inner).take();
-        }
+        let taken: Vec<_> = self
+            .by_id
+            .values()
+            .filter_map(|slot| slot.lock().unwrap_or_else(PoisonError::into_inner).take())
+            .collect();
+        drop(taken);
     }
 
     /// The slot for an entry, which exists because the catalog named it.
@@ -183,7 +190,10 @@ impl Slots {
     /// Taking the `Loaded` out drops the router's `Arc`, and a child whose
     /// last reference goes is killed by its own `Drop`. Done before the wanted
     /// child is started, which is the point: the room has to be free before
-    /// something is put in it.
+    /// something is put in it. Each drop happens here, once its slot's guard
+    /// has been released, so a kill that hangs holds the admission lock this
+    /// runs under -- which it has to, since the room is not free until the
+    /// process is gone -- and nothing else.
     ///
     /// Each is taken by [`take_if_idle`](super::loaded::take_if_idle), which
     /// re-reads the busy signal for the reason [`Slots::held`] records.
@@ -198,8 +208,12 @@ impl Slots {
     /// rather than only that something is.
     fn unload<'a>(&self, ids: &'a [String]) -> Result<(), &'a str> {
         for id in ids {
-            if !take_if_idle(self.slot(id), |_| true) {
-                return Err(id);
+            match take_if_idle(self.slot(id), |_| true) {
+                Take::Taken(child) => drop(child),
+                Take::Busy => return Err(id),
+                // Gone already, by a sweep or another admission: the room
+                // this wanted is there, which is all this asked for.
+                Take::Empty => {}
             }
         }
         Ok(())

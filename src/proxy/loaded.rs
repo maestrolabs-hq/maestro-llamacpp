@@ -4,6 +4,7 @@
 //! table that holds these and decides which of them may exist is `slots`; this
 //! is only what sits in one of its cells.
 
+use std::process::ExitStatus;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
@@ -91,22 +92,46 @@ pub(super) fn live_child(slot: &Slot) -> Option<Arc<Child>> {
     let held = slot.as_mut()?;
 
     // Liveness while the lock is held, so a child that exited since it last
-    // answered is not handed to a relay that will fail on it.
-    //
-    // Only when nothing else holds a reference: `try_wait` needs the process
-    // mutably, and `Arc::get_mut` succeeds exactly when the slot's handle is
-    // the only one. So a child that already has a reader goes unchecked -- the
-    // count proves a reader, not a live process -- and a dead one is handed on
-    // for the relay's own connection to discover.
-    if let Some(child) = Arc::get_mut(&mut held.child)
-        && matches!(child.check(), Liveness::Exited(_))
-    {
+    // answered is not handed to a relay that will fail on it. The dead child
+    // is dropped here rather than handed back, because there is nobody to
+    // hand it to: killing an exited process fails at once and the wait only
+    // reaps it, so this drop cannot hang the way a live child's can.
+    if exited(held).is_some() {
         *slot = None;
         return None;
     }
 
     held.last_used = Instant::now();
     Some(Arc::clone(&held.child))
+}
+
+/// The status a slot's child exited with, when it has and nothing else holds
+/// it.
+///
+/// Only when nothing else holds a reference: `try_wait` needs the process
+/// mutably, and `Arc::get_mut` succeeds exactly when the slot's handle is
+/// the only one. So a child that already has a reader goes unchecked -- the
+/// count proves a reader, not a live process -- and a dead one is left for
+/// that reader's own connection to discover.
+fn exited(held: &mut Loaded) -> Option<ExitStatus> {
+    match Arc::get_mut(&mut held.child)?.check() {
+        Liveness::Exited(status) => Some(status),
+        Liveness::Running => None,
+    }
+}
+
+/// Empties a slot whose child has exited on its own, handing back the dead
+/// child to be reaped and the status it left.
+///
+/// Whatever the idle window and whatever the residency: this is not a rule
+/// about idleness but about a process that is no longer there. Until its
+/// slot is emptied, a child that died by itself holds its estimate against
+/// the budget, sits unreaped, and makes a resident's "always warm" a slot
+/// that will never answer.
+pub(super) fn take_if_exited(slot: &Slot) -> Option<(Loaded, ExitStatus)> {
+    let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    let status = exited(slot.as_mut()?)?;
+    slot.take().map(|dead| (dead, status))
 }
 
 /// What taking a slot came to.

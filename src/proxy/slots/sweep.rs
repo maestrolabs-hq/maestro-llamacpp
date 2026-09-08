@@ -4,16 +4,29 @@
 //! kills a process to make room now; this half only ever removes, on a
 //! schedule nothing is waiting on.
 
+use std::process::ExitStatus;
 use std::sync::PoisonError;
 use std::time::{Duration, Instant};
 
 use crate::catalog::Catalog;
 use crate::idle::IdleWindow;
 
-use super::super::loaded::{Take, take_if_idle};
+use super::super::loaded::{Loaded, Slot, Take, take_if_exited, take_if_idle};
 use super::Slots;
 
 impl Slots {
+    /// Empties every slot whose child has exited on its own, and names each
+    /// with the status it left.
+    ///
+    /// Every slot, whatever its residency and whatever the idle window: a
+    /// process that is gone is not a candidate for anything, it is a slot
+    /// holding an estimate for memory nobody has. Dropping the dead child
+    /// reaps it.
+    pub(in super::super) fn sweep_exited(&self, catalog: &Catalog) -> Vec<(String, ExitStatus)> {
+        let every = catalog.entries.iter().map(|entry| entry.id.clone());
+        self.swept(every, take_if_exited)
+    }
+
     /// Unloads what has gone idle past `window`, and names what actually
     /// went.
     ///
@@ -23,16 +36,12 @@ impl Slots {
     /// cutoff rather than trusting the snapshot's copy of it. An entry that
     /// gained a reader, or answered again, between the snapshot and the take
     /// stays loaded and is not named -- reporting it as unloaded would be
-    /// reporting a decision rather than an outcome.
+    /// reporting a decision rather than an outcome. Neither is a slot found
+    /// empty, emptied by an admission between the snapshot and the take.
     ///
     /// Takes no admission lock: this only ever removes, so a concurrent
     /// `admit` that snapshotted before this ran simply finds more room than
     /// it counted on, which is conservative rather than wrong.
-    ///
-    /// Only what was actually taken is named. A slot found empty -- emptied
-    /// by an admission between the snapshot and the take -- is not an unload
-    /// this performed, and reporting it as one would be reporting a decision
-    /// rather than an outcome.
     pub(in super::super) fn sweep_idle(
         &self,
         catalog: &Catalog,
@@ -43,19 +52,37 @@ impl Slots {
         };
         let now = Instant::now();
 
-        window
-            .expired(&self.held(catalog), now)
-            .into_iter()
-            .filter(|id| {
-                match take_if_idle(self.slot(id), |held| stale(now, held.last_used, duration)) {
-                    // Dropped here, with the slot's guard already released:
-                    // a kill that hangs stalls this sweep and nothing else.
-                    Take::Taken(child) => {
-                        drop(child);
-                        true
-                    }
-                    Take::Busy | Take::Empty => false,
-                }
+        let expired = window.expired(&self.held(catalog), now);
+        self.swept(expired, |slot| {
+            match take_if_idle(slot, |held| stale(now, held.last_used, duration)) {
+                Take::Taken(child) => Some((child, ())),
+                Take::Busy | Take::Empty => None,
+            }
+        })
+        .into_iter()
+        .map(|(id, ())| id)
+        .collect()
+    }
+
+    /// Runs `take` against each named slot, drops whatever came out once
+    /// that slot's guard has been released, and names what went alongside
+    /// whatever `take` said about it.
+    ///
+    /// The one place a sweep drops a child, so the rule has one place to be
+    /// read: dropping a `Child` kills its process and waits for it, and a
+    /// kill that hangs must stall this sweep and nothing else -- never a
+    /// slot's guard, which every request for that entry and every listing
+    /// would wait behind.
+    fn swept<T>(
+        &self,
+        ids: impl IntoIterator<Item = String>,
+        take: impl Fn(&Slot) -> Option<(Loaded, T)>,
+    ) -> Vec<(String, T)> {
+        ids.into_iter()
+            .filter_map(|id| {
+                let (child, said) = take(self.slot(&id))?;
+                drop(child);
+                Some((id, said))
             })
             .collect()
     }

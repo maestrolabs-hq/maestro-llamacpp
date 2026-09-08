@@ -15,9 +15,10 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use crate::admission::{Budget, Decision};
+use crate::admission::{Budget, Decision, Wanted};
 use crate::catalog::{Catalog, Entry};
 use crate::launch::{Child, Failure, Server};
+use crate::memory::Measurement;
 
 use super::loaded::{Loaded, Slot, live_child, take_if_idle};
 
@@ -136,9 +137,15 @@ impl Slots {
         // than its estimate -- because those are only knowable by trying.
         Server::model_file(entry, root)?;
 
+        // The device is asked now, under the admission lock, so the room it
+        // reports is the room this decision acts on and no other load can
+        // have changed it in between. It counts everything on the machine,
+        // which is why it is asked at all: the ledger only knows what this
+        // router loaded.
+        let device_free_mib = self.budget.probe().device().map(|device| device.free_mib());
         match self
             .budget
-            .admit(&self.held(catalog), &entry.id, entry.memory_estimate_mib)
+            .admit(&self.held(catalog), &Wanted::of(entry), device_free_mib)
         {
             Decision::Fits => {}
             Decision::Unload(ids) => {
@@ -160,6 +167,7 @@ impl Slots {
             .unwrap_or_else(PoisonError::into_inner) = Some(Loaded {
             child: Arc::clone(&child),
             last_used: Instant::now(),
+            measured: Measurement::UNKNOWN,
         });
         Ok(child)
     }

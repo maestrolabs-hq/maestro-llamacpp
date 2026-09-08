@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use crate::launch::{Child, Liveness};
+use crate::memory::Measurement;
 
 /// A child this router has running, and what deciding its fate needs.
 ///
@@ -20,6 +21,9 @@ pub(super) struct Loaded<C = Child> {
     pub(super) child: Arc<C>,
     /// When it last answered, so the coldest is unloaded first.
     pub(super) last_used: Instant,
+    /// What the machine saw it holding once it had loaded, so admission
+    /// counts what it costs rather than only what the catalog guessed.
+    pub(super) measured: Measurement,
 }
 
 /// One entry's child, held apart from every other entry's.
@@ -158,6 +162,7 @@ mod tests {
         let slot = Mutex::new(Some(Loaded {
             child: Arc::clone(&child),
             last_used: Instant::now(),
+            measured: Measurement::UNKNOWN,
         }));
         (slot, child)
     }

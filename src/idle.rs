@@ -143,7 +143,8 @@ mod tests {
     fn loaded(id: &str, residency: Residency, busy: bool, age: u64) -> Loaded {
         Loaded {
             id: id.to_owned(),
-            memory_estimate_mib: 512,
+            cost_mib: 512,
+            device_mib: 512,
             residency,
             busy,
             last_used: Instant::now()

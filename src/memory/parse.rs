@@ -12,10 +12,10 @@
 use super::DeviceMemory;
 
 /// One mebibyte in kibibytes, the unit `ps` and `/proc/meminfo` speak.
-const KIB_PER_MIB: u64 = 1024;
+pub(super) const KIB_PER_MIB: u64 = 1024;
 
 /// One mebibyte in bytes, the unit `sysctl` and PowerShell speak.
-const BYTES_PER_MIB: u64 = 1024 * 1024;
+pub(super) const BYTES_PER_MIB: u64 = 1024 * 1024;
 
 /// What `nvidia-smi --query-gpu=memory.total,memory.used` printed, as one
 /// device.
@@ -68,24 +68,16 @@ pub(super) fn meminfo_total(text: &str) -> Option<u64> {
     let line = text
         .lines()
         .find_map(|line| line.strip_prefix("MemTotal:"))?;
-    let kib: u64 = line.split_whitespace().next()?.parse().ok()?;
-    Some(kib / KIB_PER_MIB)
+    scaled(line.split_whitespace().next()?, KIB_PER_MIB)
 }
 
-/// A whole number of bytes on its own line, as `sysctl -n hw.memsize` and
-/// PowerShell print, in mebibytes.
-pub(super) fn bytes(text: &str) -> Option<u64> {
-    let bytes: u64 = text.trim().parse().ok()?;
-    Some(bytes / BYTES_PER_MIB)
-}
-
-/// A resident set from `ps -o rss= -p <pid>`, in mebibytes.
-///
-/// One number in kibibytes, padded with spaces, or nothing at all when the
-/// process is gone.
-pub(super) fn ps_rss(text: &str) -> Option<u64> {
-    let kib: u64 = text.trim().parse().ok()?;
-    Some(kib / KIB_PER_MIB)
+/// One whole number on its own, in some unit `per_mib` of which make a
+/// mebibyte: bytes from `sysctl -n hw.memsize` and PowerShell, kibibytes
+/// padded with spaces from `ps -o rss=`, or nothing at all when the process
+/// asked about is gone.
+pub(super) fn scaled(text: &str, per_mib: u64) -> Option<u64> {
+    let count: u64 = text.trim().parse().ok()?;
+    Some(count / per_mib)
 }
 
 /// A resident set from `tasklist /FI "PID eq <pid>" /FO CSV /NH`, in
@@ -164,16 +156,19 @@ mod tests {
     }
 
     #[test]
-    fn a_byte_count_on_its_own_line_reads_in_mebibytes() {
-        assert_eq!(bytes("51539607552\n"), Some(49152));
-        assert_eq!(bytes("sysctl: unknown oid 'hw.memsize'\n"), None);
-    }
-
-    #[test]
-    fn a_resident_set_from_ps_reads_in_mebibytes() {
-        assert_eq!(ps_rss(" 3624\n"), Some(3));
-        assert_eq!(ps_rss("7598996\n"), Some(7420));
-        assert_eq!(ps_rss(""), None, "a process that is gone prints nothing");
+    fn a_number_on_its_own_reads_in_mebibytes_at_the_stated_unit() {
+        assert_eq!(scaled("51539607552\n", BYTES_PER_MIB), Some(49152), "bytes");
+        assert_eq!(scaled(" 3624\n", KIB_PER_MIB), Some(3), "kibibytes, padded");
+        assert_eq!(scaled("7598996\n", KIB_PER_MIB), Some(7420));
+        assert_eq!(
+            scaled("sysctl: unknown oid 'hw.memsize'\n", BYTES_PER_MIB),
+            None
+        );
+        assert_eq!(
+            scaled("", KIB_PER_MIB),
+            None,
+            "a process that is gone prints nothing"
+        );
     }
 
     #[test]

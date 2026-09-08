@@ -68,20 +68,16 @@ fn known_locations() -> Vec<PathBuf> {
     }
 }
 
-/// What the device holds in total and in use, as the tool prints it.
-pub(super) fn device_query(nvidia_smi: &Path) -> Option<String> {
-    output(Command::new(nvidia_smi).args([
-        "--query-gpu=memory.total,memory.used",
-        "--format=csv,noheader,nounits",
-    ]))
-}
+/// The query for what the device holds in total and in use.
+pub(super) const DEVICE_QUERY: &str = "--query-gpu=memory.total,memory.used";
 
-/// What each process holds on the device, as the tool prints it.
-pub(super) fn process_query(nvidia_smi: &Path) -> Option<String> {
-    output(Command::new(nvidia_smi).args([
-        "--query-compute-apps=pid,used_memory",
-        "--format=csv,noheader,nounits",
-    ]))
+/// The query for what each process holds on the device.
+pub(super) const PROCESS_QUERY: &str = "--query-compute-apps=pid,used_memory";
+
+/// What the device tool prints for one query, as bare comma-separated
+/// numbers with no header and no units.
+pub(super) fn query(nvidia_smi: &Path, query: &str) -> Option<String> {
+    output(Command::new(nvidia_smi).args([query, "--format=csv,noheader,nounits"]))
 }
 
 /// What this machine has in system memory, in mebibytes.
@@ -94,13 +90,15 @@ pub(super) fn system_total_mib() -> Option<u64> {
         let text = std::fs::read_to_string("/proc/meminfo").ok()?;
         parse::meminfo_total(&text)
     } else if cfg!(target_os = "macos") {
-        parse::bytes(&output(Command::new("sysctl").args(["-n", "hw.memsize"]))?)
+        let text = output(Command::new("sysctl").args(["-n", "hw.memsize"]))?;
+        parse::scaled(&text, parse::BYTES_PER_MIB)
     } else if cfg!(windows) {
-        parse::bytes(&output(Command::new("powershell").args([
+        let text = output(Command::new("powershell").args([
             "-NoProfile",
             "-Command",
             "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
-        ]))?)
+        ]))?;
+        parse::scaled(&text, parse::BYTES_PER_MIB)
     } else {
         None
     }
@@ -110,16 +108,11 @@ pub(super) fn system_total_mib() -> Option<u64> {
 pub(super) fn resident_mib(pid: u32) -> Option<u64> {
     if cfg!(windows) {
         let filter = format!("PID eq {pid}");
-        parse::tasklist_rss(&output(
-            Command::new("tasklist").args(["/FI", &filter, "/FO", "CSV", "/NH"]),
-        )?)
+        let text = output(Command::new("tasklist").args(["/FI", &filter, "/FO", "CSV", "/NH"]))?;
+        parse::tasklist_rss(&text)
     } else {
-        parse::ps_rss(&output(Command::new("ps").args([
-            "-o",
-            "rss=",
-            "-p",
-            &pid.to_string(),
-        ]))?)
+        let text = output(Command::new("ps").args(["-o", "rss=", "-p", &pid.to_string()]))?;
+        parse::scaled(&text, parse::KIB_PER_MIB)
     }
 }
 

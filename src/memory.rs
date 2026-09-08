@@ -68,10 +68,7 @@ impl Measurement {
     /// in, which is what the budget's one number stands for.
     #[must_use]
     pub fn largest_mib(&self) -> Option<u64> {
-        match (self.resident_mib, self.device_mib) {
-            (Some(resident), Some(device)) => Some(resident.max(device)),
-            (one, None) | (None, one) => one,
-        }
+        self.resident_mib.into_iter().chain(self.device_mib).max()
     }
 }
 
@@ -125,7 +122,7 @@ impl Probe {
         match self {
             Self::Fixed(fixed) => fixed.device,
             Self::Machine(machine) => {
-                let text = command::device_query(machine.nvidia_smi.as_deref()?)?;
+                let text = command::query(machine.nvidia_smi.as_deref()?, command::DEVICE_QUERY)?;
                 parse::device(&text)
             }
         }
@@ -151,7 +148,7 @@ impl Probe {
                 device_mib: machine
                     .nvidia_smi
                     .as_deref()
-                    .and_then(command::process_query)
+                    .and_then(|tool| command::query(tool, command::PROCESS_QUERY))
                     .and_then(|text| parse::compute_apps(&text, pid)),
             },
         }

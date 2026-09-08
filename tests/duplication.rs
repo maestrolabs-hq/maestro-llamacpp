@@ -112,6 +112,37 @@ const ACCEPTED: &[(&str, &str)] = &[
          what makes either of them readable.",
     ),
     (
+        "budgeted <-> windowed",
+        "Two of the three ways a test builds a serving router, each stating \
+         one more setting than the one below it and delegating downward: a \
+         budget, then a budget and a window. The shape they share is the \
+         delegation itself. Merging them would be one constructor taking \
+         every setting, which is exactly what the tests calling `serving` \
+         are spared from naming.",
+    ),
+    (
+        "budgeted <-> probed",
+        "The same delegation with the third way: a budget on a machine whose \
+         figures the test states. It delegates to the same shared launch as \
+         `windowed`, so what remains in each is only the setting it names.",
+    ),
+    (
+        "windowed <-> probed",
+        "Both hand a budget and a window to the shared launch, differing only \
+         in which of the two they let the caller state. A merged function \
+         would take both, and every idle-unload test would have to say it \
+         reads no machine and every probe test that it has no window.",
+    ),
+    (
+        "system_total_mib <-> resident_mib",
+        "Two questions the platform answers with different tools, and each \
+         function is the table of which tool answers on which platform. The \
+         shape is the table; merging them would be one table keyed by \
+         question and platform, longer than both and answering two \
+         unrelated things -- what the machine holds, and what one process \
+         holds.",
+    ),
+    (
         "the_budget_line_says_whether_anything_is_ever_unloaded \
          <-> the_idle_window_line_says_whether_anything_is_ever_unloaded_for_sitting_idle",
         "Two startup lines, each asserting the same two-branch shape: the \

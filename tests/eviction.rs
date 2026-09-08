@@ -180,6 +180,46 @@ fn a_device_without_the_room_refuses_a_start_the_budget_would_have_allowed() {
 }
 
 #[test]
+fn a_model_measured_above_its_estimate_is_counted_at_what_it_holds() {
+    // 512 and 512 against 4096 fit together on paper. Every child on this
+    // machine measures at 4000 MiB once loaded, so the first one really
+    // holds nearly the whole budget, and the second cannot load until it
+    // goes: 4000 and 512 against 4096 is over.
+    let serving = probed(
+        &two_entries(512, 512),
+        ModelsRoot::with(&[MODEL, SECOND_MODEL]),
+        Some(4096),
+        Probe::Fixed(Fixed {
+            device: None,
+            system_total_mib: None,
+            measurement: Measurement {
+                resident_mib: Some(4000),
+                device_mib: None,
+            },
+        }),
+    );
+
+    let first = request(serving.address(), &get("/models/gemma3/v1/echo"));
+    assert_eq!(status(&first), Some(200), "the first answers:\n{first}");
+    let under_estimated = child_endpoint(&first);
+
+    let second = request(serving.address(), &get("/models/qwen38/v1/echo"));
+    assert_eq!(
+        status(&second),
+        Some(200),
+        "the second answers, having made its own room:\n{second}"
+    );
+
+    assert_stops_answering(&under_estimated);
+    assert_eq!(
+        serving.loaded(),
+        vec!["qwen38".to_owned()],
+        "the first was unloaded because what it was measured to hold, not \
+         what the catalog guessed, is what the budget counts"
+    );
+}
+
+#[test]
 fn no_budget_at_all_loads_everything_and_unloads_nothing() {
     // Estimates far past anything a machine has, and no budget to weigh them
     // against. `serving` is the no-budget case, which is what every test in

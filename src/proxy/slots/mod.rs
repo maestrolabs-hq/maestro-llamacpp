@@ -13,17 +13,18 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
 
 use crate::admission::{Budget, Decision, Wanted};
 use crate::catalog::{Catalog, Entry};
 use crate::launch::{Child, Failure, Server};
-use crate::memory::Measurement;
 
-use super::loaded::{Loaded, Slot, live_child, take_if_idle};
+use super::loaded::{Slot, live_child, take_if_idle};
 
+mod start;
 mod sweep;
 mod view;
+
+pub(in crate::proxy) use start::say;
 
 /// Every entry's slot, and the budget they compete for.
 pub(super) struct Slots {
@@ -149,6 +150,11 @@ impl Slots {
         {
             Decision::Fits => {}
             Decision::Unload(ids) => {
+                say(&format!(
+                    "{}: unloading {} to make room",
+                    entry.id,
+                    ids.join(", ")
+                ));
                 if let Err(blocker) = self.unload(&ids) {
                     return Err(Failure::Refused(format!(
                         "'{}' needs room held by '{blocker}', which a request \
@@ -160,15 +166,15 @@ impl Slots {
             Decision::Refuse(message) => return Err(Failure::Refused(message)),
         }
 
-        let child = Arc::new(server.start(entry, root)?);
-        *self
+        let loaded = self.start(entry, server, root)?;
+        // The handed-out handle and the slot's own come into existence
+        // together under the lock, which is the slot invariant in `loaded`.
+        let mut slot = self
             .slot(&entry.id)
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(Loaded {
-            child: Arc::clone(&child),
-            last_used: Instant::now(),
-            measured: Measurement::UNKNOWN,
-        });
+            .unwrap_or_else(PoisonError::into_inner);
+        let child = Arc::clone(&loaded.child);
+        *slot = Some(loaded);
         Ok(child)
     }
 

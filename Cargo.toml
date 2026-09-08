@@ -55,6 +55,14 @@ path = "src/bin/stub_llama_server/main.rs"
 # something that tracks strings, escapes and depth, and getting it wrong sends
 # the request to the wrong model, which answers plausibly.
 [dependencies]
+# A child outlives the process that started it unless that process is told it
+# is ending, and a signal handler is the only way to be told. Written by hand
+# it is a different handler on every platform -- sigaction and a self-pipe on
+# Unix, SetConsoleCtrlHandler on Windows -- which is exactly the platform code
+# this repository resolves at run time rather than writes. The `termination`
+# feature is what makes it a stop rather than an interrupt: SIGTERM and SIGHUP
+# beside SIGINT, and Ctrl-Break and a closing console beside Ctrl-C.
+ctrlc = { version = "3.5", features = ["termination"] }
 serde_json = "1"
 toml = { version = "1.1", default-features = false, features = [
     "parse",

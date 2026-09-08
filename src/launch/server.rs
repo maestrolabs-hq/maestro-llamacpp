@@ -174,7 +174,7 @@ impl Server {
 
 /// The first match for a name on the search path, with the platform's
 /// executable suffix, so the Windows leg finds `llama-server.exe`.
-fn on_search_path(name: &str) -> Option<PathBuf> {
+pub(crate) fn on_search_path(name: &str) -> Option<PathBuf> {
     let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     let search = std::env::var_os("PATH")?;
     std::env::split_paths(&search)

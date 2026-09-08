@@ -4,8 +4,16 @@
 //! same reason `models_root` has one: this is the only place in the slice that
 //! touches a process-global variable. The eviction tests state their budget
 //! directly with `Budget::new`, so nothing there races this.
+//!
+//! What an unset variable means depends on the machine: the router asks it
+//! what it holds and sets a ceiling from the answer. That figure cannot be
+//! asserted here without asserting about whichever machine runs the tests,
+//! so what is asserted is agreement -- an unset variable yields exactly what
+//! asking the machine yields -- and that a machine which can answer at all
+//! does not end up with no budget.
 
 use maestro_llamacpp::admission::Budget;
+use maestro_llamacpp::memory::Probe;
 
 const VARIABLE: &str = "MAESTRO_MEMORY_BUDGET_MIB";
 
@@ -17,7 +25,7 @@ const VARIABLE: &str = "MAESTRO_MEMORY_BUDGET_MIB";
 /// every case in one function removes the race rather than papering over it
 /// with a lock.
 #[test]
-fn the_budget_comes_from_the_environment_and_is_absent_when_unset() {
+fn the_budget_comes_from_the_environment_and_from_the_machine_when_unset() {
     let original = std::env::var_os(VARIABLE);
 
     // SAFETY: this binary carries exactly one test, so nothing else in the
@@ -31,14 +39,19 @@ fn the_budget_comes_from_the_environment_and_is_absent_when_unset() {
         "the variable is used as given"
     );
 
+    let machine = Budget::derived(Probe::detect());
+    let answers =
+        Probe::detect().device().is_some() || Probe::detect().system_total_mib().is_some();
+
     unsafe { std::env::set_var(VARIABLE, "") };
     assert_eq!(
         Budget::configured()
             .expect("an empty value is unset, not an error")
             .limit_mib(),
-        None,
+        machine.limit_mib(),
         "`export MAESTRO_MEMORY_BUDGET_MIB=` is a slip, and reading it as a \
-         budget of nothing would refuse every model on the machine"
+         budget of nothing would refuse every model on the machine; it means \
+         what unset means"
     );
 
     unsafe { std::env::set_var(VARIABLE, "plenty") };
@@ -51,12 +64,18 @@ fn the_budget_comes_from_the_environment_and_is_absent_when_unset() {
     );
 
     unsafe { std::env::remove_var(VARIABLE) };
+    let unset = Budget::configured().expect("an unset budget is not an error");
     assert_eq!(
-        Budget::configured()
-            .expect("an unset budget is not an error")
-            .limit_mib(),
-        None,
-        "unset means no budget, which means nothing is ever evicted"
+        unset.limit_mib(),
+        machine.limit_mib(),
+        "unset means the budget the machine sets for itself"
+    );
+    assert_eq!(
+        unset.limit_mib().is_some(),
+        answers,
+        "a machine that can say what it holds gets a ceiling, and only a \
+         machine that cannot is left with none: {}",
+        unset.source()
     );
 
     unsafe {

@@ -76,15 +76,31 @@ time:
 | Source | Value |
 | --- | --- |
 | `MAESTRO_MEMORY_BUDGET_MIB` | the ceiling in mebibytes, when set and not empty |
-| otherwise | no budget, so nothing is ever unloaded |
+| otherwise, on a machine with a device `nvidia-smi` can see | the device's total less a tenth, and never less than 1024 MiB less |
+| otherwise, on a machine that reports its system memory | four fifths of it |
+| otherwise | no budget, so nothing is ever unloaded to make room |
 
 A budget is a fact about one machine's hardware, which is why it is read from
-the environment rather than written into a catalog: the catalog describes a set
-of models without naming the machine they sit on. A value that is not a whole
-number is refused rather than read as no budget at all, because the difference
-between those two is whether anything is ever evicted.
+the environment or from the machine rather than written into a catalog: the
+catalog describes a set of models without naming the machine they sit on. A
+value that is not a whole number is refused rather than read as unset, because
+the difference between those two is whether the ceiling is the one the operator
+meant.
 
-The router says which it found at startup.
+The router says which it found at startup, and when the machine set the
+ceiling, what it read to set it:
+
+```text
+memory budget: 29347 MiB, derived from the device (32607 MiB total less a 3260 MiB margin)
+```
+
+The margin is there because a device is never empty when a model loads: the
+display, the driver and whatever else the machine runs hold some of it. The
+ceiling is not the only check, either. Before a model is started the device is
+asked what it has free right now, which counts everything else on the machine,
+and a loaded model is measured once it is ready so that what it turned out to
+cost is what the budget counts from then on. Both are under
+[what eviction does](#what-eviction-does-and-what-it-never-does).
 
 ### How long unused memory may be held
 

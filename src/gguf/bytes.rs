@@ -21,16 +21,19 @@ impl From<std::io::Error> for Fault {
     }
 }
 
-pub(super) fn u32_at(reader: &mut Reader) -> Result<u32, Fault> {
-    let mut bytes = [0u8; 4];
+/// Exactly `N` bytes, or the fault for a file that ends inside them.
+fn bytes_at<const N: usize>(reader: &mut Reader) -> Result<[u8; N], Fault> {
+    let mut bytes = [0u8; N];
     reader.read_exact(&mut bytes)?;
-    Ok(u32::from_le_bytes(bytes))
+    Ok(bytes)
+}
+
+pub(super) fn u32_at(reader: &mut Reader) -> Result<u32, Fault> {
+    Ok(u32::from_le_bytes(bytes_at(reader)?))
 }
 
 pub(super) fn u64_at(reader: &mut Reader) -> Result<u64, Fault> {
-    let mut bytes = [0u8; 8];
-    reader.read_exact(&mut bytes)?;
-    Ok(u64::from_le_bytes(bytes))
+    Ok(u64::from_le_bytes(bytes_at(reader)?))
 }
 
 /// The bytes one scalar of this kind occupies, or a fault for a kind the
@@ -55,16 +58,22 @@ pub(super) fn scalar_at(reader: &mut Reader, kind: u32) -> Result<Option<u64>, F
     // no cast has to be vouched for.
     let taken = usize::try_from(width(kind)?).unwrap_or(8);
     reader.read_exact(&mut bytes[..taken])?;
-    // A negative integer converts to nothing, which is right: no count the
-    // estimate reads can be below zero, and a file saying so is not believed.
-    Ok(match kind {
+    Ok(unsigned(kind, bytes))
+}
+
+/// The integer a scalar's bytes spell, when they spell a non-negative one.
+///
+/// A negative integer converts to nothing, which is right: no count the
+/// estimate reads can be below zero, and a file saying so is not believed.
+fn unsigned(kind: u32, bytes: [u8; 8]) -> Option<u64> {
+    match kind {
         0 | 2 | 4 | 10 => Some(u64::from_le_bytes(bytes)),
         1 => u64::try_from(i8::from_le_bytes([bytes[0]])).ok(),
         3 => u64::try_from(i16::from_le_bytes([bytes[0], bytes[1]])).ok(),
         5 => u64::try_from(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])).ok(),
         11 => u64::try_from(i64::from_le_bytes(bytes)).ok(),
         _ => None,
-    })
+    }
 }
 
 /// A string, kept when it is no longer than `keep` bytes and stepped over

@@ -250,3 +250,232 @@ fn a_relative_path_resolves_against_a_models_root() {
         "resolution is the caller's decision, not the catalog's"
     );
 }
+
+mod fixtures;
+use fixtures::{Gguf, Scratch, Value};
+use maestro_llamacpp::catalog::EstimateSource;
+
+const MIB: u64 = 1024 * 1024;
+
+/// A model whose estimate can be worked out by hand: four layers, two
+/// key-value heads, a head width of 64 (256 embedding over 4 heads, with no
+/// key length stated), and 64 MiB of weights.
+///
+/// At 1024 tokens of f16 cache that is 4 x 1024 x 2 x (64 + 64) x 2 bytes,
+/// which is 2 MiB, on top of 64 MiB of weights, 5 percent of those for
+/// fragmentation, and 1024 MiB of fixed overhead: 1093.2 MiB, rounded up.
+fn small_model() -> Gguf {
+    Gguf::model("tiny", 4, 8192, 256)
+        .with("tiny.attention.head_count", Value::U32(4))
+        .with("tiny.attention.head_count_kv", Value::U32(2))
+}
+
+const SMALL_MODEL_MIB: u32 = 1094;
+
+/// A catalog with one entry whose estimate is whatever the test says.
+fn one_entry(estimate: &str) -> String {
+    format!(
+        "version = 1\n\
+         [models.alpha]\n\
+         path = \"a/model.gguf\"\n\
+         context_size = 1024\n\
+         {estimate}\n"
+    )
+}
+
+#[test]
+fn an_absent_estimate_is_derived_from_the_files() {
+    let scratch = Scratch::new("catalog-derive");
+    small_model().write(&scratch.path().join("a/model.gguf"), 64 * MIB);
+
+    let reading = Catalog::read(&one_entry(""), scratch.path()).expect("derivable");
+
+    let alpha = reading.catalog.entry("alpha").expect("alpha");
+    assert_eq!(
+        alpha.memory_estimate_mib, SMALL_MODEL_MIB,
+        "weights, cache for the configured context, fragmentation and \
+         overhead, rounded up to the next mebibyte"
+    );
+    assert_eq!(
+        reading.catalog.estimate_source("alpha"),
+        Some(EstimateSource::Derived),
+        "and the catalog remembers that nobody declared it"
+    );
+    assert!(
+        reading.notes.iter().all(|note| !note.contains("declared")),
+        "nothing to warn about when nothing was declared:\n{:?}",
+        reading.notes
+    );
+}
+
+#[test]
+fn a_declared_estimate_below_what_the_files_suggest_is_kept_and_named() {
+    let scratch = Scratch::new("catalog-under");
+    small_model().write(&scratch.path().join("a/model.gguf"), 64 * MIB);
+
+    let reading = Catalog::read(&one_entry("memory_estimate_mib = 512"), scratch.path())
+        .expect("a declared estimate is never a problem");
+
+    let alpha = reading.catalog.entry("alpha").expect("alpha");
+    assert_eq!(
+        alpha.memory_estimate_mib, 512,
+        "the operator's figure stands: they may know something the files do not"
+    );
+    assert_eq!(
+        reading.catalog.estimate_source("alpha"),
+        Some(EstimateSource::Declared)
+    );
+    let warning = reading
+        .notes
+        .iter()
+        .find(|note| note.contains("alpha"))
+        .unwrap_or_else(|| panic!("one note names the entry: {:?}", reading.notes));
+    assert!(
+        warning.contains("512") && warning.contains(&SMALL_MODEL_MIB.to_string()),
+        "both figures, so the operator can see how far apart they are: {warning}"
+    );
+}
+
+#[test]
+fn a_declared_estimate_at_or_above_the_derived_one_earns_no_note() {
+    let scratch = Scratch::new("catalog-over");
+    small_model().write(&scratch.path().join("a/model.gguf"), 64 * MIB);
+
+    let reading = Catalog::read(&one_entry("memory_estimate_mib = 2048"), scratch.path())
+        .expect("a declared estimate is never a problem");
+
+    assert!(
+        reading.notes.iter().all(|note| !note.contains("alpha")),
+        "an estimate that errs on the safe side is not worth a line:\n{:?}",
+        reading.notes
+    );
+}
+
+#[test]
+fn an_absent_estimate_with_no_file_to_derive_it_from_is_a_problem() {
+    let scratch = Scratch::new("catalog-nofile");
+
+    let report = Catalog::read(&one_entry(""), scratch.path())
+        .expect_err("nothing to measure and nothing declared")
+        .to_string();
+
+    assert!(
+        report.contains("alpha") && report.contains("memory_estimate_mib"),
+        "the entry and the field, like every other problem:\n{report}"
+    );
+    assert!(
+        report.contains("model.gguf"),
+        "and the file it would have measured:\n{report}"
+    );
+}
+
+#[test]
+fn the_cache_type_flags_shrink_the_derived_estimate() {
+    let scratch = Scratch::new("catalog-cache-type");
+    small_model().write(&scratch.path().join("a/model.gguf"), 64 * MIB);
+
+    let reading = Catalog::read(
+        &one_entry("[models.alpha.flags]\nctk = \"q8_0\"\nctv = \"q8_0\""),
+        scratch.path(),
+    )
+    .expect("derivable");
+
+    // An eight-bit cache holds 17 bytes per 16 elements: the 2 MiB of f16
+    // cache becomes 1.0625 MiB, and the total rounds to one less.
+    assert_eq!(
+        reading
+            .catalog
+            .entry("alpha")
+            .expect("alpha")
+            .memory_estimate_mib,
+        SMALL_MODEL_MIB - 1
+    );
+}
+
+#[test]
+fn a_draft_and_a_projector_are_counted_with_the_weights() {
+    let scratch = Scratch::new("catalog-draft");
+    small_model().write(&scratch.path().join("a/model.gguf"), 64 * MIB);
+    // Two layers, one head of width 64: 2 x 1024 x 1 x 128 x 2 bytes, 512 KiB
+    // of cache at the same context, on top of 16 MiB of weights.
+    Gguf::model("tiny", 2, 8192, 128)
+        .with("tiny.attention.head_count", Value::U32(2))
+        .with("tiny.attention.head_count_kv", Value::U32(1))
+        .write(&scratch.path().join("a/draft.gguf"), 16 * MIB);
+    // A projector carries no layers to cache for; only its bytes count.
+    Gguf::v3()
+        .with("general.architecture", Value::Text("clip".to_owned()))
+        .write(&scratch.path().join("a/mmproj.gguf"), 8 * MIB);
+
+    let reading = Catalog::read(
+        &one_entry("draft_path = \"a/draft.gguf\"\nprojector_path = \"a/mmproj.gguf\""),
+        scratch.path(),
+    )
+    .expect("derivable");
+
+    // 88 MiB of weights and 4.4 MiB of fragmentation, 2 MiB plus 512 KiB of
+    // cache, and 1024 MiB of overhead: 1118.9 MiB, rounded up.
+    assert_eq!(
+        reading
+            .catalog
+            .entry("alpha")
+            .expect("alpha")
+            .memory_estimate_mib,
+        1119
+    );
+}
+
+#[test]
+fn every_shard_of_a_split_model_is_weighed() {
+    let scratch = Scratch::new("catalog-shards");
+    small_model()
+        .with("split.count", Value::U16(3))
+        .write(&scratch.path().join("a/big-00001-of-00003.gguf"), 4 * MIB);
+    for shard in ["a/big-00002-of-00003.gguf", "a/big-00003-of-00003.gguf"] {
+        Gguf::v3().write(&scratch.path().join(shard), 4 * MIB);
+    }
+    let text =
+        "version = 1\n[models.alpha]\npath = \"a/big-00001-of-00003.gguf\"\ncontext_size = 1024\n";
+
+    let reading = Catalog::read(text, scratch.path()).expect("derivable");
+
+    // 12 MiB of weights across three files, 0.6 MiB of fragmentation, 2 MiB
+    // of cache, 1024 MiB of overhead: 1038.6 MiB, rounded up.
+    assert_eq!(
+        reading
+            .catalog
+            .entry("alpha")
+            .expect("alpha")
+            .memory_estimate_mib,
+        1039
+    );
+}
+
+#[test]
+fn a_file_that_is_not_readable_as_gguf_is_estimated_from_its_size_alone() {
+    let scratch = Scratch::new("catalog-fallback");
+    let path = scratch.path().join("a/model.gguf");
+    std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+    std::fs::write(&path, vec![0u8; 10 << 20]).expect("ten mebibytes of nothing");
+
+    let reading = Catalog::read(&one_entry(""), scratch.path()).expect("still derivable");
+
+    // Size and a quarter, plus the fixed overhead: 1036.5 MiB, rounded up.
+    assert_eq!(
+        reading
+            .catalog
+            .entry("alpha")
+            .expect("alpha")
+            .memory_estimate_mib,
+        1037
+    );
+    assert!(
+        reading
+            .notes
+            .iter()
+            .any(|note| note.contains("alpha") && note.contains("size")),
+        "an estimate from size alone is worth saying, because it is the \
+         rougher of the two:\n{:?}",
+        reading.notes
+    );
+}

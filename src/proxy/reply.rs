@@ -150,6 +150,18 @@ pub(super) fn preflight(stream: &mut TcpStream, endpoint: &Endpoint) -> std::io:
     .write(stream)
 }
 
+/// Tells a client that asked before sending its body to send it.
+///
+/// An interim line rather than a reply: no length, no closing, and the final
+/// status still to come. A client that sent `Expect: 100-continue` waits for
+/// this before it sends a byte of body, and one that is never answered either
+/// hangs or gives up and sends anyway after a fixed delay -- which is what
+/// every `curl` with a body over about a kilobyte was paying per request.
+pub(super) fn proceed(stream: &mut TcpStream) -> std::io::Result<()> {
+    stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
+    stream.flush()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

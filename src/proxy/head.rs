@@ -56,6 +56,14 @@ pub(super) struct Head {
     /// Whether the request announced chunked framing, which this router
     /// refuses rather than guesses at.
     pub(super) chunked: bool,
+    /// Whether the caller is holding its body back until it is told to send
+    /// it, as `Expect: 100-continue` says.
+    ///
+    /// The router's expectation to meet rather than the child's: the body is
+    /// read here, on the generic endpoint before any child is involved, so
+    /// the interim answer has to come from here and the header does not
+    /// travel on.
+    pub(super) expects_continue: bool,
 }
 
 /// Turns the lines of a head into the parts the router routes on.
@@ -82,6 +90,7 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Refusal> {
     let mut headers = Vec::new();
     let mut length = Length::Absent;
     let mut chunked = false;
+    let mut expects_continue = false;
     for line in lines.iter().skip(1) {
         // A line with no colon is not a header. Skipped rather than refused:
         // the router is a relay, and inventing a rule the child does not have
@@ -103,6 +112,9 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Refusal> {
         {
             chunked = true;
         }
+        if name.eq_ignore_ascii_case("expect") && value.eq_ignore_ascii_case("100-continue") {
+            expects_continue = true;
+        }
         headers.push((name.to_owned(), value.to_owned()));
     }
 
@@ -112,6 +124,7 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Refusal> {
         headers,
         length,
         chunked,
+        expects_continue,
     })
 }
 
@@ -152,8 +165,12 @@ impl Head {
             // The caller's Host named the router, and its Connection was about
             // the router's connection. Both have been answered above with the
             // child's, so passing the originals through would send the child
-            // two of each.
-            if name.eq_ignore_ascii_case("host") || name.eq_ignore_ascii_case("connection") {
+            // two of each. Its Expect was met by the router before the body
+            // was read, so the child is not asked to meet it again.
+            if name.eq_ignore_ascii_case("host")
+                || name.eq_ignore_ascii_case("connection")
+                || name.eq_ignore_ascii_case("expect")
+            {
                 continue;
             }
             write!(text, "{name}: {value}\r\n").expect(infallible);
@@ -273,6 +290,30 @@ mod tests {
         assert!(
             !head_of("/models/gemma3/v1/echo").chunked,
             "and absent when it was not announced"
+        );
+    }
+
+    #[test]
+    fn an_expectation_is_read_here_and_does_not_travel_on() {
+        let head = parse(&lines(&[
+            "POST /models/gemma3/v1/chat/completions HTTP/1.1",
+            "Expect: 100-Continue",
+        ]))
+        .expect("a well-formed head");
+
+        assert!(
+            head.expects_continue,
+            "the caller is holding its body back, whatever the case of the value"
+        );
+        assert!(
+            !head.rewrite(upstream()).to_lowercase().contains("expect"),
+            "the router meets the expectation itself, so the child is not \
+             asked to meet it again:\n{}",
+            head.rewrite(upstream())
+        );
+        assert!(
+            !head_of("/models/gemma3/v1/echo").expects_continue,
+            "and absent when nothing was asked"
         );
     }
 

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use super::field::problem;
 use super::read;
-use super::{Catalog, Entry, Report, estimate};
+use super::{Catalog, Entry, Report, discover, estimate};
 
 /// Where an entry's memory estimate came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +105,10 @@ impl Catalog {
         }
 
         let declared = entries.len();
+        let found = discover::under(root, &entries, &drafts.defaults, &mut ledger.notes);
+        let discovered: BTreeSet<String> = found.iter().map(|entry| entry.id.clone()).collect();
+        ledger.derived.extend(discovered.iter().cloned());
+        entries.extend(found);
         entries.sort_by(|a, b| a.id.cmp(&b.id));
 
         Ok(Reading {
@@ -112,7 +116,7 @@ impl Catalog {
                 version: drafts.version.unwrap_or_default(),
                 entries,
                 derived: ledger.derived,
-                discovered: BTreeSet::new(),
+                discovered,
             },
             notes: ledger.notes,
             declared,

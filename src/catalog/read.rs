@@ -46,7 +46,7 @@ const DEFAULT_FIELDS: &[&str] = &[
 /// Generous rather than tight, on purpose: a budget that expires on a healthy
 /// model teaches people to raise it without reading it, and then it protects
 /// nothing.
-const DEFAULT_STARTUP_TIMEOUT_SECONDS: u32 = 300;
+pub(super) const DEFAULT_STARTUP_TIMEOUT_SECONDS: u32 = 300;
 
 /// How the defaults table is named in its own problems.
 const DEFAULTS: &str = "catalog defaults";
@@ -75,6 +75,7 @@ pub(super) struct Defaults {
 #[derive(Debug, Default)]
 pub(super) struct Drafts {
     pub version: Option<u32>,
+    pub defaults: Defaults,
     pub entries: Vec<Entry>,
     pub undeclared: BTreeSet<String>,
     pub problems: Vec<String>,
@@ -93,8 +94,10 @@ pub(super) fn drafts(text: &str) -> Result<Drafts, Report> {
         .map_err(|e| Report::single(format!("the catalog is not valid TOML: {e}")))?;
     let mut drafts = Drafts::default();
     drafts.version = version(&table, &mut drafts.problems);
-    let defaults = defaults(&table, &mut drafts.problems);
+    drafts.defaults = defaults(&table, &mut drafts.problems);
+    let defaults = std::mem::take(&mut drafts.defaults);
     drafts.entries = entries(&table, &defaults, &mut drafts);
+    drafts.defaults = defaults;
     Ok(drafts)
 }
 

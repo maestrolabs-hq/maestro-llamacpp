@@ -203,6 +203,11 @@ kv-unified = "true"
 # safe direction, and recorded rather than tuned.
 [models.qwen3-4b]
 path = "llm/qwen/qwen3-4b/Qwen3-4B-Q4_K_M.gguf"
+# 40960, the whole of what these weights were trained to, rather than the
+# 32768 the defaults table would have handed it. Like its 0.6B rival this is
+# pinned to the processor, so the extra cache is system memory and the device
+# figure below does not move.
+context_size = 40960
 # On-demand, not resident. Pinned to the processor with `n-gpu-layers = 0`,
 # so it holds 787 MiB of the device and roughly 7.4 GiB of system memory --
 # and the budget it is charged against is derived from the device. Resident,
@@ -224,7 +229,16 @@ kv-unified = "true"
 # decide between them on real rounds, not on file size.
 [models.qwen3-06b]
 path = "llm/qwen/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf"
-context_size = 32768
+# 40960 is what these weights were trained to, and all of it. The steward
+# reads transcripts rather than snippets, so there is no reason to hand it
+# less than it can hold; 128K is not on offer at any price, because the
+# training ran out at 40960 and anything past that is rope scaling and a
+# quality question rather than a memory one.
+#
+# The extra cache costs nothing on the device. This entry is pinned to the
+# processor below, so its cache is system memory, and the estimate under it
+# is what it holds on the device -- which does not move.
+context_size = 40960
 # On demand, and nothing on this estate is resident -- which is a decision the
 # arithmetic makes rather than a preference.
 #
@@ -316,12 +330,25 @@ top-k = "40"
 [models.gemma4]
 path = "llm/google/gemma-4-26b/gemma-4-26B_q4_0-it.gguf"
 projector_path = "llm/google/gemma-4-26b/gemma-4-26B-it-mmproj.gguf"
-context_size = 32768
-# Measured 16764 MiB resident 2026-09-12 on an RTX 5090, by `model-router
-# bench` at 205 tok/s: a twentieth over, to a quarter gibibyte.
-memory_estimate_mib = 17664
+# 131072 rather than the 32768 this ran at, and it is very nearly free. Of
+# this model's 30 layers, 25 attend over a 1024-token sliding window and only
+# 5 keep a cache that grows with the context -- so four times the window moved
+# the derived figure by 1920 MiB, and quantising the cache below gave most of
+# that back. The weights are trained to 262144; the stop here is the card.
+context_size = 131072
+# Measured 17834 MiB resident 2026-09-12 on an RTX 5090, loaded and answering:
+# a twentieth over, to a quarter gibibyte. The earlier figure of 17664 was this
+# entry at 32768 on an f16 cache, and it measured 16764 -- so four times the
+# context cost 1070 MiB, which is what a sliding window buys.
+memory_estimate_mib = 18944
 
 [models.gemma4.flags]
+# Quantised keys and values, as every other large entry here already had. This
+# was the one that did not, and at f16 it paid twice over for a cache the
+# sliding window keeps small anyway. Flash attention is what makes a quantised
+# cache available at all, and it was already on.
+ctk = "q8_0"
+ctv = "q8_0"
 fa = "on"
 np = "1"
 kv-unified = "true"
@@ -332,10 +359,21 @@ kv-unified = "true"
 [models.ornith15]
 path = "llm/ornith/ornith-1.5-35b-a3b/Ornith-1.5-35B-Q5_K_M.gguf"
 projector_path = "llm/ornith/ornith-1.5-35b-a3b/mmproj-Ornith-1.5-35B-BF16.gguf"
-context_size = 65536
-# Measured 26765 MiB resident 2026-09-12 on an RTX 5090, by `model-router
-# bench` at 185 tok/s: a twentieth over, to a quarter gibibyte.
-memory_estimate_mib = 28160
+# Doubled from 65536. Only 3B of these 35B parameters are active and the cache
+# is already quantised, so the second 64K reads as about 680 MiB by the
+# estimator. The weights are trained to 262144 and the card is what stops this
+# short of it: at 131072 the entry very nearly fills the budget on its own.
+context_size = 131072
+# Measured 28179 MiB resident 2026-09-12 on an RTX 5090, loaded and answering.
+# The earlier figure of 28160 was this entry at 65536, which measured 26765 --
+# so the second 64K cost 1414 MiB.
+#
+# The margin is a fiftieth rather than this file's usual twentieth, for the
+# reason qwen38 carries the same: a twentieth over puts this at 29588, above
+# the 29347 MiB the router derives from the device, and the entry would be
+# refused for room it plainly has. Admission re-checks what the device reports
+# free before it starts anything, which is the backstop a thin margin leans on.
+memory_estimate_mib = 28672
 reasoning_format = "deepseek"
 
 [models.ornith15.flags]

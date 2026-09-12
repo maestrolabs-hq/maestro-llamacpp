@@ -9,6 +9,7 @@
 //! line, or run on a thread -- that is [`super::proxy::reaper`], modelled on
 //! `residents.rs` the way this is modelled on `admission`.
 
+use crate::queue::Wait;
 use std::time::{Duration, Instant};
 
 use crate::admission::{Budget, Loaded};
@@ -28,15 +29,17 @@ const VARIABLE: &str = "MAESTRO_IDLE_UNLOAD_SECONDS";
 pub struct Limits {
     pub(crate) budget: Budget,
     pub(crate) idle_window: IdleWindow,
+    pub(crate) wait: Wait,
 }
 
 impl Limits {
     /// Carries a budget and an idle window that were decided independently.
     #[must_use]
-    pub fn new(budget: Budget, idle_window: IdleWindow) -> Self {
+    pub fn new(budget: Budget, idle_window: IdleWindow, wait: Wait) -> Self {
         Self {
             budget,
             idle_window,
+            wait,
         }
     }
 }
@@ -143,7 +146,8 @@ mod tests {
     fn loaded(id: &str, residency: Residency, busy: bool, age: u64) -> Loaded {
         Loaded {
             id: id.to_owned(),
-            memory_estimate_mib: 512,
+            cost_mib: 512,
+            device_mib: 512,
             residency,
             busy,
             last_used: Instant::now()

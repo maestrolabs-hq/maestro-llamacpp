@@ -76,15 +76,31 @@ time:
 | Source | Value |
 | --- | --- |
 | `MAESTRO_MEMORY_BUDGET_MIB` | the ceiling in mebibytes, when set and not empty |
-| otherwise | no budget, so nothing is ever unloaded |
+| otherwise, on a machine with a device `nvidia-smi` can see | the device's total less a tenth, and never less than 1024 MiB less |
+| otherwise, on a machine that reports its system memory | four fifths of it |
+| otherwise | no budget, so nothing is ever unloaded to make room |
 
 A budget is a fact about one machine's hardware, which is why it is read from
-the environment rather than written into a catalog: the catalog describes a set
-of models without naming the machine they sit on. A value that is not a whole
-number is refused rather than read as no budget at all, because the difference
-between those two is whether anything is ever evicted.
+the environment or from the machine rather than written into a catalog: the
+catalog describes a set of models without naming the machine they sit on. A
+value that is not a whole number is refused rather than read as unset, because
+the difference between those two is whether the ceiling is the one the operator
+meant.
 
-The router says which it found at startup.
+The router says which it found at startup, and when the machine set the
+ceiling, what it read to set it:
+
+```text
+memory budget: 29347 MiB, derived from the device (32607 MiB total less a 3260 MiB margin)
+```
+
+The margin is there because a device is never empty when a model loads: the
+display, the driver and whatever else the machine runs hold some of it. The
+ceiling is not the only check, either. Before a model is started the device is
+asked what it has free right now, which counts everything else on the machine,
+and a loaded model is measured once it is ready so that what it turned out to
+cost is what the budget counts from then on. Both are under
+[what eviction does](#what-eviction-does-and-what-it-never-does).
 
 ### How long unused memory may be held
 
@@ -172,7 +188,16 @@ curl --no-buffer http://127.0.0.1:8080/v1/chat/completions \
 ```
 
 The path is passed to the child unchanged, and `GET /v1/models` lists the
-catalog's entries without starting anything.
+catalog's entries without starting anything. `HEAD /v1/models` answers with
+the listing's headers and no body, and a query string on the listing is still
+the listing, because a client library that pages its model list adds one.
+
+Only `GET` and `POST` reach a child. A preflight (`OPTIONS`) is answered by
+the router itself -- `204`, an `Allow` header, and permissive
+`Access-Control-Allow-*` headers, which is safe because the router binds
+loopback only -- and never starts a model. Any other method under a model
+prefix is refused with `405` before a child is involved, because the only
+thing forwarding it could achieve is a load that then answers `404`.
 
 Reading the body costs the response nothing. The router parses the request to
 learn which model answers; the reply is still copied byte for byte, and both
@@ -185,10 +210,44 @@ the child ready.
 ### What eviction does, and what it never does
 
 With a budget set, a model that does not fit causes the coldest idle on-demand
-model to be unloaded first. The budget is a ceiling on the estimates written in
-the catalog, never on measured memory: a model that costs more than its
-estimate is admitted and then fails to load, and what protects against that is
-that a failed start names its entry, not that the estimate is right.
+model to be unloaded first. Two questions are asked before a model is started,
+and both have to say yes. The budget is a ceiling on what the loaded models
+cost, where each costs its catalog estimate until it has been measured and the
+larger of the two afterwards -- so a model that turns out to hold four times
+its estimate is counted at what it holds from the moment that is known, and
+the operator reads it on the line the load prints:
+
+```text
+qwen3-06b: loading, estimated at 1024 MiB
+qwen3-06b: ready in 5.4 s, measured 4.5 GiB resident and 0.7 GiB on the device (catalog said 1024 MiB)
+```
+
+The device is the second question, asked at the moment of the decision for
+what it has free right now. That counts everything on the machine, not only
+what this router loaded, so a desktop that grew since the budget was set is
+room the ledger still believes in and the device no longer has. The device can
+ask for more to be unloaded than the budget would, and refuses -- naming what
+was needed against what was free -- when unloading every idle model would
+still not make the room. A model whose flags keep every layer off the device
+is not held to the device's room, which is the one flag this router reads
+rather than passes through: the resident entry in the shipped catalog lives on
+the processor beside a large model that fills the device, and holding it to
+the device's room would refuse the arrangement it was measured in. Where the
+machine cannot be asked, the device question is not asked, and the budget
+decides alone.
+
+What neither question prevents is a model that costs more than both its
+estimate and the room the device reported, in the seconds between the decision
+and its load. That start fails, and what protects against it is that a failed
+start names its entry.
+
+Every load and every eviction is said out loud, so a swap is visible without
+watching the process table:
+
+```text
+gemma3: unloading qwen38 to make room
+gemma3: loading, estimated at 2048 MiB
+```
 
 A model is never unloaded while something is reading from it. Killing a child
 mid-answer would truncate the stream, which a caller cannot tell apart from a
@@ -205,25 +264,37 @@ for. A start that fails only by being attempted -- a startup budget expiring,
 a model costing more than its estimate -- cannot be prevented this way, and
 the room is already gone when it does.
 
-**The router does not survive being signalled, and its children do.** `serve`
-runs until the process ends, so `stop` is never reached: on `SIGTERM` -- what
-`systemctl stop`, `kill` and a container stop all send -- the router dies and
-every `llama-server` it started keeps running and keeps its memory. A terminal
-interrupt is different, because children are left in the process group
-deliberately and `Ctrl-C` reaches them too.
+**A signalled router stops its children before it goes.** `serve` runs until
+the process is asked to end, and that end is a signal: `SIGTERM` -- what
+`systemctl stop`, `kill` and a container stop all send -- as well as `SIGINT`
+and `SIGHUP` on Unix, and Ctrl-C, Ctrl-Break or a closing console on Windows.
+On any of them the router ends every `llama-server` it started, says how many
+it ended, and exits zero:
 
-The cost lands on the budget. A restarted router builds its table empty, so it
-counts nothing while the orphans still hold real memory, and it will then
-admit a full budget of models on top of them. Nothing in the process table
-ties a stray server to the router that started it, so after a signalled stop,
-look for them:
+```text
+stopping: ended 2 children
+```
+
+A second signal while that stop is still running ends the process at once,
+with a failing status because the children were then not waited for. It is
+the way out from a child that will not die: without it the second signal
+would queue behind the first, and nothing short of `SIGKILL` could end the
+router.
+
+Two ends this cannot cover, and nothing inside a process can. Being killed
+outright -- `SIGKILL`, `taskkill /F`, an out-of-memory kill -- reaches no
+handler, so the children stay, and keep their memory. And a child that is
+mid-answer when the signal arrives is held by that answer rather than by the
+router: the router's claim on it is released, but the process exits before
+the answer ends, and that child is left behind. Either way a restarted router
+builds its table empty, counts nothing while the strays hold real memory, and
+admits a full budget of models on top of them. Nothing in the process table
+ties a stray server to the router that started it, so after such an end, look
+for them:
 
 ```sh
 pgrep -af llama-server
 ```
-
-A signal handler needs a dependency and a Windows job object, which is a
-change with its own gates to clear rather than a line to add here.
 
 **Four smaller things are known and not addressed.** Recorded so the next
 slice inherits them rather than discovering them:
@@ -255,20 +326,36 @@ is forwarded is still the caller's own bytes.
 A caller that hangs up mid-answer closes the connection to the child, which is
 how `llama-server` is told to stop generating.
 
-Nine refusals happen before anything is forwarded, and each names what it was
-about:
+Every refusal happens before anything is forwarded, and is the JSON envelope
+an OpenAI-compatible client already parses:
 
-| Cause | Answer |
-| --- | --- |
-| the path names no entry the catalog carries | `404`, listing what it does carry |
-| the request body announces chunked framing | `501`; send a body with a `Content-Length` |
-| the child cannot be started | `502`, with the reason from the launcher |
-| the child misses its startup budget | `504`, naming the budget |
-| the body names no model, on the generic endpoint | `400`, saying which endpoint needs none |
-| the body is larger than the router will read | `413`, naming both sizes |
-| the `Content-Length` will not parse | `400`, quoting back what arrived |
-| the generic endpoint is sent no declared body | `411`, naming the header it wanted |
-| nothing can be unloaded to make room | `503`, naming what is holding the memory |
+```json
+{"error":{"message":"no model called 'nowhere'; this catalog carries: gemma3","type":"invalid_request_error","code":"model_not_found"}}
+```
+
+The status and the `code` are fixed by the cause, so a program switches on
+those and never on prose; the `message` is for the reader and may be reworded.
+`type` is `invalid_request_error` for a `4xx` and `server_error` for a `5xx`.
+`Retry-After` is sent exactly when waiting changes the answer.
+
+| Cause | Status | `code` |
+| --- | --- | --- |
+| the head cannot be read as a request | `400` | `malformed_request` |
+| the head is larger than the router will read | `431` | `request_head_too_large` |
+| the path is no shape the router serves | `404` | `path_not_found` |
+| the path or body names no entry the catalog carries | `404`, listing what it does carry | `model_not_found` |
+| the method is none a model is asked anything with | `405`, with `Allow` | `method_not_allowed` |
+| the request body announces chunked framing | `501`; send a body with a `Content-Length` | `chunked_body_not_implemented` |
+| the `Content-Length` will not parse | `400`, quoting back what arrived | `malformed_content_length` |
+| the generic endpoint is sent no declared body | `411`, naming the header it wanted | `content_length_required` |
+| the body is larger than the router will read | `413`, naming both sizes | `body_too_large` |
+| the body ends before its declared length | `400` | `body_incomplete` |
+| the body is not JSON | `400` | `body_not_json` |
+| the body names no model, on the generic endpoint | `400`, saying which endpoint needs none | `model_missing` |
+| the child cannot be started | `502`, with the reason from the launcher | `child_unavailable` |
+| the child misses its startup budget | `504`, naming the budget | `startup_timeout` |
+| the room is held by a request that reached it first | `503`, with `Retry-After` | `room_contended` |
+| nothing can be unloaded to make room | `503`, naming what is holding the memory | `insufficient_room` |
 
 Once a response has begun there is no status left to send, so a failure after
 that point closes the connection rather than pretending it can still answer.

@@ -2,19 +2,23 @@
 //!
 //! Split from the module beside it when that file grew past the module-size
 //! gate, along the seam the gate exposed: `proxy` carries the type a caller
-//! holds, and this carries what one connection is answered with.
+//! holds, and this carries what one connection is answered with. What that
+//! answer looks like on the wire is `reply`'s business; this decides which
+//! answer a request has earned.
 //!
 //! Everything here happens before a byte of a child's response has been
 //! forwarded, which is what makes a status still possible. Once the relay
 //! starts, it does not come back here.
 
-use std::io::{BufReader, Write};
+use std::io::BufReader;
 use std::net::TcpStream;
 
+mod own;
+
 use super::endpoint::Endpoint;
-use super::head::Length;
-use super::{Shared, body, head, relay};
-use crate::launch::Failure;
+use super::head::{Head, Length};
+use super::refusal::{Cause, Refusal};
+use super::{Shared, body, head, relay, reply};
 
 /// Answers one connection.
 pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> {
@@ -22,56 +26,57 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
 
     let lines = match head::read(&mut reader) {
         Ok(lines) => lines,
-        Err(failure) => return refuse(&mut stream, 400, &failure.to_string()),
+        Err(refusal) => return reply::refuse(&mut stream, &refusal),
     };
     let request = match head::parse(&lines) {
         Ok(request) => request,
-        Err(failure) => return refuse(&mut stream, 404, &failure.to_string()),
+        Err(refusal) => return reply::refuse(&mut stream, &refusal),
     };
+
+    // A preflight asks what is allowed, which the router knows without
+    // asking a child. Answered before framing is checked: a preflight has no
+    // body, and one that declared something odd is still a preflight.
+    if request.method == "OPTIONS" {
+        return reply::preflight(&mut stream, &request.endpoint);
+    }
+
+    // Before anything else that could start a child. A method no model can
+    // be asked anything with is refused here rather than forwarded, because
+    // the only thing forwarding it could achieve is a load that answers 404.
+    if !request.endpoint.allows(&request.method) {
+        let allowed = request.endpoint.allowed();
+        return reply::refuse(
+            &mut stream,
+            &Refusal::new(
+                Cause::MethodNotAllowed(allowed),
+                format!(
+                    "{} is not a method this endpoint answers; it accepts {allowed}",
+                    request.method
+                ),
+            ),
+        );
+    }
 
     // Framing first, before anything is read, looked up or started. A request
     // this router cannot frame is one it will not serve whatever it names, so
     // deciding that here costs neither a body nor a model load.
-    if request.chunked {
-        // Named as precisely as the request allows: a dedicated path carries
-        // its entry, and a generic one keeps its model in the body this
-        // refusal is declining to read.
-        let about = match &request.endpoint {
-            Endpoint::Dedicated { id, .. } => format!("entry '{id}'"),
-            Endpoint::Generic { .. } => "the generic endpoint".to_owned(),
-            Endpoint::Listing => "the model listing".to_owned(),
-        };
-        return refuse(
-            &mut stream,
-            501,
-            &format!(
-                "{about}: this router does not implement chunked request \
-                 bodies; send a body with a Content-Length"
-            ),
-        );
+    if let Err(refusal) = framing(&request) {
+        return reply::refuse(&mut stream, &refusal);
     }
 
-    // Framing still, and for the same reason: a length this router cannot read
-    // is a request it cannot honour whatever it names. Defaulting it to zero
-    // was worse than refusing -- the dedicated endpoint would forward the
-    // header as received and leave the child waiting for a body nobody was
-    // going to send, and the generic one would refuse the empty result for not
-    // being JSON, which names the wrong thing entirely.
-    if let Length::Malformed(value) = &request.length {
-        return refuse(
-            &mut stream,
-            400,
-            &format!(
-                "'Content-Length: {value}' is not a length this router can \
-                 read; send a byte count, or no such header at all"
-            ),
-        );
-    }
-
-    // The listing is the router's own answer, so it is settled before
-    // anything is read from the body or started on a child's behalf.
-    if matches!(request.endpoint, Endpoint::Listing) {
-        return list(&mut stream, shared);
+    // The router's own answers, settled before anything is read from the body
+    // or started on a child's behalf: saying what could be served is never a
+    // reason to start serving it.
+    //
+    // All three honour `HEAD` the same way, because a client sizing a buffer
+    // from the declared length is doing so for the same reason whichever of
+    // them it asked.
+    let head_only = request.method == "HEAD";
+    match request.endpoint {
+        Endpoint::Listing => return reply::listing(&mut stream, shared, head_only),
+        Endpoint::Catalogue => return own::catalogue(&mut stream, shared, head_only),
+        Endpoint::Properties => return own::properties(&mut stream, head_only),
+        Endpoint::Dedicated { .. } | Endpoint::Generic { .. } => {}
     }
 
     // Which model answers, and the body if reading it was what said so. The
@@ -79,69 +84,56 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
     // is why only one of these two arms buffers anything.
     let (wanted, buffered) = match &request.endpoint {
         Endpoint::Dedicated { id, .. } => (id.clone(), None),
-        Endpoint::Listing => unreachable!("answered above"),
+        Endpoint::Listing | Endpoint::Catalogue | Endpoint::Properties => {
+            unreachable!("answered above")
+        }
         Endpoint::Generic { .. } => {
-            // This endpoint has nothing else to route on, so a request with no
-            // declared body is one it can never answer. Said as the missing
-            // header rather than as a parser complaining about an empty slice,
-            // which is what a caller sending `GET /v1/models/gemma3` would
-            // otherwise be told.
-            let Length::Given(declared) = request.length else {
-                return refuse(
-                    &mut stream,
-                    411,
-                    "the generic endpoint routes on the 'model' field of the \
-                     request body, so it needs one and a Content-Length that \
-                     declares it; or address a model directly at \
-                     /models/<model>/<path>",
-                );
+            let declared = match declared_body(&request.length) {
+                Ok(declared) => declared,
+                Err(refusal) => return reply::refuse(&mut stream, &refusal),
             };
-
-            // The one place this bound is enforced, and the only place it can
-            // be: `body::read` allocates what it is told to and has no status
-            // left to refuse with. Checked before reading rather than after,
-            // because taking the memory and then objecting to it is the bug
-            // the bound exists to prevent.
-            if declared > body::MAX_BODY_BYTES {
-                return refuse(
-                    &mut stream,
-                    413,
-                    &format!(
-                        "a request body of {declared} bytes is larger than the \
-                         {} this router will read",
-                        body::MAX_BODY_BYTES
-                    ),
-                );
+            // Told to send now and not before: a body refused for its length
+            // is one the caller was spared sending.
+            if request.expects_continue {
+                reply::proceed(&mut stream)?;
             }
             match body::read(&mut reader, declared) {
                 Ok((bytes, model)) => (model, Some(bytes)),
-                Err(failure) => return refuse(&mut stream, 400, &failure.to_string()),
+                Err(refusal) => return reply::refuse(&mut stream, &refusal),
             }
         }
     };
 
     let Some(entry) = shared.catalog.entry(&wanted) else {
-        return refuse(
+        return reply::refuse(
             &mut stream,
-            404,
-            &format!(
-                "no model called '{wanted}'; this catalog carries: {}",
-                shared.known()
+            &Refusal::new(
+                Cause::ModelNotFound,
+                format!(
+                    "no model called '{wanted}'; this catalog carries: {}",
+                    shared.known()
+                ),
             ),
         );
     };
 
-    // The two causes are distinguished by launch::Failure's variants rather
-    // than by reading its message, so the wording of an error is not a
+    // The causes are distinguished by launch::Failure's variants rather than
+    // by reading its message, so the wording of an error is not a
     // load-bearing interface.
     let child = match shared.child(entry) {
         Ok(child) => child,
-        Err(Failure::NotReady(message)) => return refuse(&mut stream, 504, &message),
-        Err(Failure::Unavailable(message)) => return refuse(&mut stream, 502, &message),
-        // Nothing was attempted and nothing is broken, so this is the one
-        // refusal a caller can act on by waiting: 503 rather than 502.
-        Err(Failure::Refused(message)) => return refuse(&mut stream, 503, &message),
+        Err(failure) => return reply::refuse(&mut stream, &Refusal::from(failure)),
     };
+
+    // The dedicated endpoint reads the body only now, to hand it to a child
+    // that is ready for it, so a caller holding its body back is told to
+    // send only now. A load that took minutes has already outlasted the
+    // wait `curl` gives this before sending anyway, and that is harmless: the
+    // body is on the socket either way, and the interim line is ignored by a
+    // client that stopped waiting for it.
+    if buffered.is_none() && request.expects_continue && request.body_bytes() > 0 {
+        reply::proceed(&mut stream)?;
+    }
 
     // The relay is timed by when it ends rather than when it started, so a
     // response that takes longer than the idle window does not make its own
@@ -160,70 +152,77 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
     outcome
 }
 
-/// Every entry the catalog carries, in the shape a client expects.
+/// Refuses the framing this router does not implement, or cannot read.
 ///
-/// Answered from the catalog and nothing else: listing what can be served is
-/// not a reason to start serving it, so no child is touched.
-fn list(stream: &mut TcpStream, shared: &Shared) -> std::io::Result<()> {
-    let data: Vec<serde_json::Value> = shared
-        .catalog
-        .entries
-        .iter()
-        .map(|entry| {
-            serde_json::json!({
-                "id": entry.id,
-                "object": "model",
-                "owned_by": "maestro-llamacpp",
-            })
-        })
-        .collect();
-    let body = serde_json::json!({ "object": "list", "data": data }).to_string();
-
-    reply(stream, 200, "OK", "application/json", &body)
+/// Chunked bodies are refused rather than guessed at. A length that will not
+/// parse is refused rather than defaulted to zero, which was worse: the
+/// dedicated endpoint would forward the header as received and leave the
+/// child waiting for a body nobody was going to send, and the generic one
+/// would refuse the empty result for not being JSON, which names the wrong
+/// thing entirely.
+fn framing(request: &Head) -> Result<(), Refusal> {
+    if request.chunked {
+        // Named as precisely as the request allows: a dedicated path carries
+        // its entry, and a generic one keeps its model in the body this
+        // refusal is declining to read.
+        let about = match &request.endpoint {
+            Endpoint::Dedicated { id, .. } => format!("entry '{id}'"),
+            Endpoint::Generic { .. } => "the generic endpoint".to_owned(),
+            Endpoint::Listing => "the model listing".to_owned(),
+            Endpoint::Catalogue => "the catalogue".to_owned(),
+            Endpoint::Properties => "the server's properties".to_owned(),
+        };
+        return Err(Refusal::new(
+            Cause::ChunkedBody,
+            format!(
+                "{about}: this router does not implement chunked request \
+                 bodies; send a body with a Content-Length"
+            ),
+        ));
+    }
+    if let Length::Malformed(value) = &request.length {
+        return Err(Refusal::new(
+            Cause::MalformedLength,
+            format!(
+                "'Content-Length: {value}' is not a length this router can \
+                 read; send a byte count, or no such header at all"
+            ),
+        ));
+    }
+    Ok(())
 }
 
-/// The router's own answer, as a complete reply with a declared length.
+/// How long a body the generic endpoint is about to read, if it may.
 ///
-/// Distinct from anything relayed: these are the refusals that happen before a
-/// single byte of a child's response has been forwarded, which is what makes a
-/// status still possible.
-fn refuse(stream: &mut TcpStream, status: u16, message: &str) -> std::io::Result<()> {
-    let reason = match status {
-        400 => "Bad Request",
-        404 => "Not Found",
-        411 => "Length Required",
-        413 => "Content Too Large",
-        501 => "Not Implemented",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        _ => "Gateway Timeout",
+/// Only this endpoint reads a body, because only this endpoint has nothing
+/// else to route on -- so a request with no declared body is one it can never
+/// answer. Said as the missing header rather than as a parser complaining
+/// about an empty slice, which is what a caller sending `GET /v1/models/gemma3`
+/// would otherwise be told.
+fn declared_body(length: &Length) -> Result<usize, Refusal> {
+    let Length::Given(declared) = *length else {
+        return Err(Refusal::new(
+            Cause::LengthRequired,
+            "the generic endpoint routes on the 'model' field of the request \
+             body, so it needs one and a Content-Length that declares it; or \
+             address a model directly at /models/<model>/<path>",
+        ));
     };
-    reply(stream, status, reason, "text/plain", message)
-}
 
-/// Writes one reply the router authored, rather than one it relayed.
-///
-/// The framing is the same whatever the answer is: a declared length and a
-/// closed connection, because a caller that can rely on neither has to guess
-/// where the reply ended. Only the status, the type and the body differ, so
-/// only those are asked for -- which is what keeps the two callers above about
-/// what they answer rather than about how a reply is shaped.
-fn reply(
-    stream: &mut TcpStream,
-    status: u16,
-    reason: &str,
-    content_type: &str,
-    body: &str,
-) -> std::io::Result<()> {
-    write!(
-        stream,
-        "HTTP/1.1 {status} {reason}\r\n\
-         Content-Type: {content_type}\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n\
-         {body}",
-        body.len()
-    )?;
-    stream.flush()
+    // The one place this bound is enforced, and the only place it can be:
+    // `body::read` allocates what it is told to and has no status left to
+    // refuse with. Checked before reading rather than after, because taking
+    // the memory and then objecting to it is the bug the bound exists to
+    // prevent.
+    if declared > body::MAX_BODY_BYTES {
+        return Err(Refusal::new(
+            Cause::BodyTooLarge,
+            format!(
+                "a request body of {declared} bytes is larger than the {} this \
+                 router will read",
+                body::MAX_BODY_BYTES
+            ),
+        ));
+    }
+    Ok(declared)
 }

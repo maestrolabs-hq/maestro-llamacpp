@@ -1,9 +1,12 @@
 //! The catalog: which models this router can serve, and how each is launched.
 //!
-//! This module is the whole of slice 1. Its interface is four types and one
-//! function: parse text, get a `Catalog` back or a report naming everything
-//! wrong with it. How TOML is walked, how an entry inherits the defaults
-//! table, and how a location is refused are implementation and stay inside.
+//! This module began as the whole of slice 1, and its interface is still
+//! small: parse text, get a `Catalog` back or a report naming everything
+//! wrong with it; or read the same text against a models root, and get back
+//! the catalog with every estimate settled and every model file the root
+//! carries beside it. How TOML is walked, how an entry inherits the defaults
+//! table, how a location is refused, how an estimate is derived and how a
+//! file becomes an entry are implementation and stay inside.
 //!
 //! Two properties are part of the interface rather than the implementation,
 //! because a caller cannot use the module correctly without knowing them.
@@ -16,13 +19,17 @@
 //! An error reading "invalid catalog" sends the reader back to the file to
 //! guess, which is the failure this design exists to avoid.
 
+mod discover;
+mod estimate;
 mod field;
 mod path;
 mod read;
+mod resolve;
 
 pub use path::RelativePath;
+pub use resolve::{EstimateSource, Reading};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 /// Everything wrong with one catalog, gathered in a single pass.
@@ -114,6 +121,19 @@ pub struct Entry {
     /// cold page cache takes minutes. One value would be either too tight for
     /// the large entries or meaningless for the small ones.
     pub startup_timeout_seconds: u32,
+    /// Which build of the server this entry needs, when it needs a particular
+    /// one.
+    ///
+    /// A name, never a path: the catalog describes a set of models without
+    /// naming the machine they sit on, and a path to a binary is the most
+    /// machine-specific thing there is. The name selects `llama-server-<name>`
+    /// on the search path, so an operator points it at their build the way
+    /// they point at everything else -- by putting it where the router looks.
+    ///
+    /// `None` uses the server the router was started with. An entry needing a
+    /// patched build -- speculative decoding against a sidecar the stock
+    /// server cannot load -- names it, and the rest never think about it.
+    pub runtime: Option<String>,
     /// Server settings this router passes through without interpreting.
     pub flags: BTreeMap<String, String>,
 }
@@ -125,6 +145,14 @@ pub struct Catalog {
     pub version: u32,
     /// The entries, ordered by identifier so two reads agree.
     pub entries: Vec<Entry>,
+    /// The entries whose estimate was derived from their files.
+    ///
+    /// Kept beside the entries rather than on them: an entry is what the
+    /// router serves, and where a figure came from is a fact about one
+    /// reading of it.
+    derived: BTreeSet<String>,
+    /// The entries that came from the models root rather than the text.
+    discovered: BTreeSet<String>,
 }
 
 impl Catalog {
@@ -155,22 +183,28 @@ impl Catalog {
     /// can be read; every other failure is collected, so one run of the tool
     /// surfaces one round of mistakes.
     pub fn parse(text: &str) -> Result<Self, Report> {
-        let table = text
-            .parse::<toml::Table>()
-            .map_err(|e| Report::single(format!("the catalog is not valid TOML: {e}")))?;
+        let mut drafts = read::drafts(text)?;
+        // Text alone cannot derive an estimate; with no root to read the
+        // files from, an entry that declares none is refused.
+        for id in &drafts.undeclared {
+            drafts.problems.push(field::problem(
+                &format!("entry '{id}'"),
+                "memory_estimate_mib",
+                "is required, and no default supplies it",
+            ));
+        }
 
-        let mut problems = Vec::new();
-        let version = read::version(&table, &mut problems);
-        let defaults = read::defaults(&table, &mut problems);
-        let entries = read::entries(&table, &defaults, &mut problems);
-
-        if problems.is_empty() {
+        if drafts.problems.is_empty() {
             Ok(Self {
-                version: version.unwrap_or_default(),
-                entries,
+                version: drafts.version.unwrap_or_default(),
+                entries: drafts.entries,
+                derived: BTreeSet::new(),
+                discovered: BTreeSet::new(),
             })
         } else {
-            Err(Report { problems })
+            Err(Report {
+                problems: drafts.problems,
+            })
         }
     }
 
@@ -178,5 +212,23 @@ impl Catalog {
     #[must_use]
     pub fn entry(&self, id: &str) -> Option<&Entry> {
         self.entries.iter().find(|entry| entry.id == id)
+    }
+
+    /// Where this entry's estimate came from, if the catalog carries it.
+    #[must_use]
+    pub fn estimate_source(&self, id: &str) -> Option<EstimateSource> {
+        self.entry(id)?;
+        Some(if self.derived.contains(id) {
+            EstimateSource::Derived
+        } else {
+            EstimateSource::Declared
+        })
+    }
+
+    /// Whether this entry was found under the models root rather than
+    /// written in the catalog.
+    #[must_use]
+    pub fn is_discovered(&self, id: &str) -> bool {
+        self.discovered.contains(id)
     }
 }

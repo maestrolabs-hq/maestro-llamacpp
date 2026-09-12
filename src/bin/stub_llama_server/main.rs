@@ -37,6 +37,15 @@ struct Options {
     /// reached the right one needs the reply to say which one answered.
     alias: String,
     pacing: Pacing,
+    /// Names a marker file. On the run that finds it absent, this stub exits
+    /// before binding at all; on a later run that finds it present, it
+    /// behaves normally. Stands in for `launch::server`'s `free_port` losing
+    /// its own release-then-rebind race: the port this stub was given is
+    /// never touched, so nothing outside the process can ever connect to it.
+    never_bind_marker: Option<PathBuf>,
+    /// The same failure, on every run rather than only the first, for
+    /// proving a retry is bounded rather than unbounded.
+    never_bind: bool,
 }
 
 fn main() -> ExitCode {
@@ -47,6 +56,23 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    // Checked before the bind that would otherwise make this run
+    // indistinguishable from a real one: a marker not yet there means this is
+    // the first run, and it exits having touched neither the port nor the
+    // socket, so nothing outside this process can tell it apart from having
+    // lost `free_port`'s race. Present means a prior run already paid that
+    // cost, so this one behaves as asked.
+    if let Some(marker) = &options.never_bind_marker {
+        if !marker.exists() {
+            if let Err(error) = std::fs::write(marker, b"") {
+                eprintln!("stub-llama-server: cannot write never-bind marker: {error}");
+            }
+            return ExitCode::FAILURE;
+        }
+    } else if options.never_bind {
+        return ExitCode::FAILURE;
+    }
 
     let listener = match TcpListener::bind((options.host.as_str(), options.port)) {
         Ok(listener) => listener,
@@ -115,6 +141,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut gap = Duration::ZERO;
     let mut die_after = None;
     let mut hangup_marker = None;
+    let mut never_bind_marker = None;
+    let mut never_bind = false;
 
     let mut args = args;
     while let Some(argument) = args.next() {
@@ -137,6 +165,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--stream-gap" => gap = Duration::from_millis(number(&value()?, "--stream-gap")?),
             "--die-after-events" => die_after = Some(number(&value()?, "--die-after-events")?),
             "--hangup-marker" => hangup_marker = Some(PathBuf::from(value()?)),
+            "--never-bind-marker" => never_bind_marker = Some(PathBuf::from(value()?)),
+            "--never-bind" => never_bind = true,
             _ => {}
         }
     }
@@ -153,6 +183,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
             die_after,
             hangup_marker,
         },
+        never_bind_marker,
+        never_bind,
     })
 }
 

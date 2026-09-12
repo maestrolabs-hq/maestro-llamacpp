@@ -13,16 +13,20 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
 
-use crate::admission::{Budget, Decision};
+use crate::admission::Budget;
 use crate::catalog::{Catalog, Entry};
 use crate::launch::{Child, Failure, Server};
+use crate::queue::Wait;
 
-use super::loaded::{Loaded, Slot, live_child, take_if_idle};
+use super::loaded::{Slot, Take, live_child, take_if_idle};
 
+mod room;
+mod start;
 mod sweep;
 mod view;
+
+pub(in crate::proxy) use start::say;
 
 /// Every entry's slot, and the budget they compete for.
 pub(super) struct Slots {
@@ -44,11 +48,12 @@ pub(super) struct Slots {
     /// whole deadlock argument: one lock order, so no cycle.
     admission: Mutex<()>,
     budget: Budget,
+    wait: Wait,
 }
 
 impl Slots {
     /// One slot per entry the catalog carries, all of them empty.
-    pub(super) fn new(catalog: &Catalog, budget: Budget) -> Self {
+    pub(super) fn new(catalog: &Catalog, budget: Budget, wait: Wait) -> Self {
         Self {
             by_id: catalog
                 .entries
@@ -57,6 +62,7 @@ impl Slots {
                 .collect(),
             admission: Mutex::new(()),
             budget,
+            wait,
         }
     }
 
@@ -80,10 +86,27 @@ impl Slots {
     }
 
     /// Ends every child, and forgets them.
+    ///
+    /// Every slot is emptied first and the children dropped afterwards, so
+    /// no slot's guard is held while a process is being killed and waited
+    /// for -- the same rule [`take_if_idle`] keeps, for the same reason.
+    /// Which entries are loaded right now, by id.
+    ///
+    /// Ids rather than handles, deliberately: the slot invariant in
+    /// [`super::loaded`] is a rule about where an `Arc` may be cloned, and
+    /// handing out references to list what is running is exactly what it
+    /// warns against. A caller asking this wants to report, not to serve.
+    pub(super) fn loaded(&self, catalog: &Catalog) -> Vec<String> {
+        self.snapshot(catalog, |entry, _| entry.id.clone())
+    }
+
     pub(super) fn clear(&self) {
-        for slot in self.by_id.values() {
-            slot.lock().unwrap_or_else(PoisonError::into_inner).take();
-        }
+        let taken: Vec<_> = self
+            .by_id
+            .values()
+            .filter_map(|slot| slot.lock().unwrap_or_else(PoisonError::into_inner).take())
+            .collect();
+        drop(taken);
     }
 
     /// The slot for an entry, which exists because the catalog named it.
@@ -136,31 +159,23 @@ impl Slots {
         // than its estimate -- because those are only knowable by trying.
         Server::model_file(entry, root)?;
 
-        match self
-            .budget
-            .admit(&self.held(catalog), &entry.id, entry.memory_estimate_mib)
-        {
-            Decision::Fits => {}
-            Decision::Unload(ids) => {
-                if let Err(blocker) = self.unload(&ids) {
-                    return Err(Failure::Refused(format!(
-                        "'{}' needs room held by '{blocker}', which a request \
-                         reached first; this may succeed on a retry",
-                        entry.id
-                    )));
-                }
-            }
-            Decision::Refuse(message) => return Err(Failure::Refused(message)),
-        }
+        // Room is made here rather than decided here: when what holds it is
+        // busy rather than resident, this waits for it. The admission lock is
+        // held throughout, which is what makes waiting correct rather than
+        // merely patient -- a second request that would compete for the same
+        // memory queues behind this one instead of racing it to the same
+        // conclusion.
+        self.make_room(catalog, entry)?;
 
-        let child = Arc::new(server.start(entry, root)?);
-        *self
+        let loaded = self.start(entry, server, root)?;
+        // The handed-out handle and the slot's own come into existence
+        // together under the lock, which is the slot invariant in `loaded`.
+        let mut slot = self
             .slot(&entry.id)
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(Loaded {
-            child: Arc::clone(&child),
-            last_used: Instant::now(),
-        });
+            .unwrap_or_else(PoisonError::into_inner);
+        let child = Arc::clone(&loaded.child);
+        *slot = Some(loaded);
         Ok(child)
     }
 
@@ -169,7 +184,10 @@ impl Slots {
     /// Taking the `Loaded` out drops the router's `Arc`, and a child whose
     /// last reference goes is killed by its own `Drop`. Done before the wanted
     /// child is started, which is the point: the room has to be free before
-    /// something is put in it.
+    /// something is put in it. Each drop happens here, once its slot's guard
+    /// has been released, so a kill that hangs holds the admission lock this
+    /// runs under -- which it has to, since the room is not free until the
+    /// process is gone -- and nothing else.
     ///
     /// Each is taken by [`take_if_idle`](super::loaded::take_if_idle), which
     /// re-reads the busy signal for the reason [`Slots::held`] records.
@@ -184,8 +202,12 @@ impl Slots {
     /// rather than only that something is.
     fn unload<'a>(&self, ids: &'a [String]) -> Result<(), &'a str> {
         for id in ids {
-            if !take_if_idle(self.slot(id), |_| true) {
-                return Err(id);
+            match take_if_idle(self.slot(id), |_| true) {
+                Take::Taken(child) => drop(child),
+                Take::Busy => return Err(id),
+                // Gone already, by a sweep or another admission: the room
+                // this wanted is there, which is all this asked for.
+                Take::Empty => {}
             }
         }
         Ok(())

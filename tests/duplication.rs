@@ -102,8 +102,8 @@ const ACCEPTED: &[(&str, &str)] = &[
         "The same as the pair above, with the other protection rule.",
     ),
     (
-        "start <-> spawn",
-        "start is spawn plus the readiness loop, and delegates to it -- the \
+        "attempt <-> spawn",
+        "attempt is spawn plus the readiness loop, and delegates to it -- the \
          same relationship as optional and required above. What they share is \
          the shape every fallible step in that module has: do one thing, and \
          name the entry when it fails. That is the module's error contract \
@@ -112,15 +112,116 @@ const ACCEPTED: &[(&str, &str)] = &[
          what makes either of them readable.",
     ),
     (
-        "the_budget_line_says_whether_anything_is_ever_unloaded \
-         <-> the_idle_window_line_says_whether_anything_is_ever_unloaded_for_sitting_idle",
-        "Two startup lines, each asserting the same two-branch shape: the \
-         configured value appears when there is one, and the variable to set \
-         appears when there is not. That is the startup-reporting contract \
-         from `budget` and `idle_window` themselves, not duplication to \
-         remove -- the two functions report unrelated settings, and merging \
-         their tests would take the variable name and the configured value as \
-         parameters, saying nothing either name did not already say.",
+        "windowed <-> probed",
+        "Both hand a budget and a window to the shared launch, differing only \
+         in which of the two they let the caller state. A merged function \
+         would take both, and every idle-unload test would have to say it \
+         reads no machine and every probe test that it has no window.",
+    ),
+    (
+        "system_total_mib <-> resident_mib",
+        "Two questions the platform answers with different tools, and each \
+         function is the table of which tool answers on which platform. The \
+         shape is the table; merging them would be one table keyed by \
+         question and platform, longer than both and answering two \
+         unrelated things -- what the machine holds, and what one process \
+         holds.",
+    ),
+    (
+        "u32_at <-> u64_at",
+        "Two one-line readers over bytes_at, differing only in the integer \
+         type the bytes spell. The shared shape is the whole function. \
+         Merging them would need a trait over from_le_bytes that the \
+         standard library does not offer, and inlining them would spell the \
+         width at every call site where the name says it once.",
+    ),
+    (
+        "as_residency <-> as_runtime",
+        "The same pair as `as_positive <-> as_residency`, for the same reason: \
+         both read text and phrase one refusal, so they share a shape. What \
+         they check does not overlap -- enum membership against which \
+         characters may name a binary -- and a merged converter would take \
+         the check as a parameter and be longer than both.",
+    ),
+    (
+        "as_text <-> as_runtime",
+        "`as_runtime` is `as_text` plus one guard, and calls it. Collapsing \
+         them means one function taking a predicate, which is what having two \
+         named converters exists to avoid.",
+    ),
+    (
+        "an_entry_naming_a_runtime_is_served_from_that_build \
+         <-> an_entry_naming_a_runtime_that_is_not_there_says_so_rather_than_falling_back",
+        "Both build one catalog, make one request and assert one status, \
+         because that shared shape is the contract. The causes differ and are \
+         the point: a runtime that is present must be used, and one that is \
+         absent must fail loudly rather than fall back to a server that \
+         cannot load the entry. Merging them would take the status as a \
+         parameter and stop naming either cause.",
+    ),
+    (
+        "entry <-> line",
+        "Two fixtures in `invocation.rs` matched on shape and nothing else: \
+         one builds an `Entry` literal, the other maps `of`'s output to \
+         strings. They share no line and no idea. The match arrived with the \
+         `runtime` field, which is the gate comparing structure rather than \
+         meaning, and recording it is cheaper than shaping a fixture around a \
+         similarity score.",
+    ),
+    (
+        "budgeted <-> queued",
+        "The delegation family again, with the way that states a wait. Each \
+         of these names one setting and hands the rest to the shared launch, \
+         so the shape they share is the handing-on itself. Merging them is \
+         one constructor taking every setting, which is exactly what the \
+         tests calling `serving` are spared from naming.",
+    ),
+    (
+        "windowed <-> queued",
+        "Both state one setting over a budget -- an idle window, or how long \
+         a request waits for room -- and are otherwise the same delegation. \
+         A merged function would take both, and every idle-unload test would \
+         have to say it does not wait while every queueing test said it has \
+         no window.",
+    ),
+    (
+        "queued <-> probed",
+        "The same delegation with the way that states a machine. What each \
+         names does not overlap at all: how long to wait for room, against \
+         what the device and every child report. They are alike only in \
+         having one parameter and passing the rest on.",
+    ),
+    (
+        "listing <-> json",
+        "`listing` is `json` with the catalog read into a value first, and it \
+         calls it -- so what the gate has matched is delegation seen from the \
+         outside, both ending in the same sentence: build a value, hand it to \
+         the framing. Collapsing them leaves the one caller that already \
+         holds a value passing it to a function with nothing left to do. The \
+         pair replaced `list <-> catalogue` and `list <-> properties`, which \
+         went stale when the second writer in `answer::own` was dropped for \
+         this one.",
+    ),
+    (
+        "allowed <-> suffix",
+        "Two questions asked of the same three endpoint shapes, each answered \
+         per shape with a match: which methods an endpoint accepts, and what \
+         the child is asked for. The shared structure is the enum they both \
+         read. Merging them would be one method taking which question to \
+         answer as a parameter, and the two answers have nothing in common \
+         but the variants they are keyed on.",
+    ),
+    (
+        "an_embedding_entry_is_not_charged_a_cache_it_never_keeps \
+         <-> a_reranking_entry_is_not_charged_a_cache_either",
+        "Two flags the server keys on separately, asserted the same way \
+         because the assertion is the contract: however a way of running a \
+         model treats its cache, the estimate has to follow. What differs is \
+         which flag, and that is the whole of each test's name. Merging them \
+         takes the flag as a parameter and leaves one test naming neither \
+         mode -- and they are not one claim, because a server can gain \
+         reranking without embeddings or the reverse, and the estimate would \
+         then be wrong for exactly one of them with nothing to say so.",
     ),
 ];
 

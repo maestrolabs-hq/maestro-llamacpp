@@ -154,6 +154,58 @@ fn the_next_request_for_an_unloaded_entry_is_answered_and_it_is_loaded_again() {
     );
 }
 
+/// The resident entry alone, exiting on its own two seconds after it is
+/// ready -- long enough for a slow runner to have seen it loaded first.
+fn resident_that_exits() -> String {
+    format!(
+        "version = 1\n\
+         \n\
+         [defaults]\n\
+         context_size = 4096\n\
+         residency = \"on-demand\"\n\
+         memory_estimate_mib = 512\n\
+         startup_timeout_seconds = 30\n\
+         \n\
+         [models.resident]\n\
+         path = \"{RESIDENT_MODEL}\"\n\
+         residency = \"resident\"\n\
+         \n\
+         [models.resident.flags]\n\
+         exit-after = \"2000\"\n"
+    )
+}
+
+#[test]
+fn a_child_that_exits_on_its_own_is_swept_from_its_slot_whatever_its_residency() {
+    let serving = windowed(
+        &resident_that_exits(),
+        ModelsRoot::with(&[RESIDENT_MODEL]),
+        None,
+        QUICK_WINDOW,
+    );
+
+    // Seen loaded first, or the emptiness below proves nothing: a slot that
+    // was never filled is empty for a reason this test is not about.
+    settled(&serving, "loaded its resident", |s| {
+        s.loaded().iter().any(|id| id == "resident")
+    });
+
+    // A resident is never a candidate for idle unloading, so only a sweep
+    // that notices the process is gone can empty this slot. Until it does,
+    // the dead child holds its estimate against the budget and sits
+    // unreaped, and \"always warm\" is a slot that will never answer.
+    settled(&serving, "emptied the slot of the child that exited", |s| {
+        !s.loaded().iter().any(|id| id == "resident")
+    });
+
+    let reply = request(serving.address(), &get("/models/resident/v1/echo"));
+    assert_eq!(
+        status(&reply),
+        Some(200),
+        "the next request finds the slot empty and starts a fresh child:\n{reply}"
+    );
+}
+
 #[test]
 fn a_resident_outlives_the_window_and_is_still_named() {
     let serving = windowed(

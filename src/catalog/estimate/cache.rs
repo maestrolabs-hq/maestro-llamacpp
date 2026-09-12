@@ -33,6 +33,37 @@ pub(super) fn cache_bytes(
     let value_length = metadata
         .of_model("attention.value_length")
         .unwrap_or(key_length);
+    // Layers that differ are summed one at a time. A model whose layers all
+    // attend the same way is the common case and keeps the single product.
+    if let Some(pattern) = metadata.per_layer("attention.sliding_window_pattern")
+        && let Some(window) = metadata.of_model("attention.sliding_window")
+    {
+        let swa_keys = metadata
+            .of_model("attention.key_length_swa")
+            .unwrap_or(key_length);
+        let swa_values = metadata
+            .of_model("attention.value_length_swa")
+            .unwrap_or(swa_keys);
+        let by_layer = metadata.per_layer("attention.head_count_kv");
+        let windowed = u64::from(context).min(window);
+
+        let mut total: u128 = 0;
+        for (layer, slides) in pattern.iter().enumerate() {
+            let heads = by_layer
+                .and_then(|counts| counts.get(layer).copied())
+                .unwrap_or(kv_heads);
+            let (span, key, value) = if *slides == 0 {
+                (u64::from(context), key_length, value_length)
+            } else {
+                (windowed, swa_keys, swa_values)
+            };
+            total += u128::from(span)
+                * u128::from(heads)
+                * (u128::from(key) * u128::from(keys) + u128::from(value) * u128::from(values));
+        }
+        return Some(total / 16);
+    }
+
     let per_token = u128::from(kv_heads)
         * (u128::from(key_length) * u128::from(keys)
             + u128::from(value_length) * u128::from(values));

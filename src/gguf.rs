@@ -72,6 +72,7 @@ const ARRAY: u32 = 9;
 pub struct Metadata {
     architecture: Option<String>,
     numbers: BTreeMap<String, u64>,
+    layers: BTreeMap<String, Vec<u64>>,
 }
 
 impl Metadata {
@@ -93,6 +94,7 @@ impl Metadata {
         let mut metadata = Self {
             architecture: None,
             numbers: BTreeMap::new(),
+            layers: BTreeMap::new(),
         };
         metadata
             .fill(&mut reader, length)
@@ -118,6 +120,20 @@ impl Metadata {
     #[must_use]
     pub fn of_model(&self, suffix: &str) -> Option<u64> {
         self.number(&format!("{}.{suffix}", self.architecture()?))
+    }
+
+    /// A per-layer array under the architecture's own prefix, in file order.
+    ///
+    /// Kept beside the largest element rather than instead of it: a caller
+    /// that only wants the widest layer still asks [`Self::of_model`], and one
+    /// sizing a cache layer by layer needs which layer is which. A model whose
+    /// layers differ -- some attending to a window, some to the whole context,
+    /// with their own head counts -- cannot be sized from a maximum.
+    #[must_use]
+    pub fn per_layer(&self, suffix: &str) -> Option<&[u64]> {
+        self.layers
+            .get(&format!("{}.{suffix}", self.architecture()?))
+            .map(Vec::as_slice)
     }
 
     /// How many shards the model is split across, when this file is one.
@@ -182,19 +198,27 @@ impl Metadata {
     fn array(&mut self, reader: &mut Reader, key: &str) -> Result<(), Fault> {
         let kind = u32_at(reader)?;
         let count = u64_at(reader)?;
-        let per_layer =
-            key.ends_with(".attention.head_count_kv") || key.ends_with(".attention.head_count");
+        let per_layer = key.ends_with(".attention.head_count_kv")
+            || key.ends_with(".attention.head_count")
+            || key.ends_with(".attention.sliding_window_pattern");
         if per_layer && kind != STRING && kind != ARRAY {
             if count > MAX_LAYER_ARRAY {
                 return Err(Fault(format!("'{key}' claims {count} layers")));
             }
             let mut largest = None;
+            let mut elements = Vec::new();
             for _ in 0..count {
                 let element = scalar_at(reader, kind)?;
                 largest = largest.max(element);
+                if let Some(element) = element {
+                    elements.push(element);
+                }
             }
             if let Some(largest) = largest {
                 self.numbers.insert(key.to_owned(), largest);
+            }
+            if !elements.is_empty() {
+                self.layers.insert(key.to_owned(), elements);
             }
             return Ok(());
         }

@@ -68,6 +68,10 @@ pub(super) fn scalar_at(reader: &mut Reader, kind: u32) -> Result<Option<u64>, F
 fn unsigned(kind: u32, bytes: [u8; 8]) -> Option<u64> {
     match kind {
         0 | 2 | 4 | 10 => Some(u64::from_le_bytes(bytes)),
+        // A flag, as one or nothing. Read because a per-layer array of them
+        // is how a model says which of its layers attend to a window rather
+        // than to the whole context, and that decides most of the cache.
+        7 => Some(u64::from(bytes[0] != 0)),
         1 => u64::try_from(i8::from_le_bytes([bytes[0]])).ok(),
         3 => u64::try_from(i16::from_le_bytes([bytes[0], bytes[1]])).ok(),
         5 => u64::try_from(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])).ok(),

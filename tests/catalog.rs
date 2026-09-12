@@ -312,6 +312,52 @@ fn a_hybrid_model_caches_only_its_full_attention_layers() {
     );
 }
 
+/// A model of thirty layers, optionally declaring that most of them attend
+/// only to a window rather than to the whole context.
+///
+/// The pattern marks a layer 1 when it slides and 0 when it attends fully,
+/// five sliding to every one full, which is the shape Gemma ships.
+fn windowed(sliding: bool) -> Gguf {
+    let model = Gguf::model("gemma4", 30, 8192, 256)
+        .with("gemma4.attention.head_count", Value::U32(4))
+        .with("gemma4.attention.head_count_kv", Value::U32s(vec![2; 30]))
+        .with("gemma4.attention.key_length", Value::U32(128))
+        .with("gemma4.attention.value_length", Value::U32(128));
+    if !sliding {
+        return model;
+    }
+    let pattern: Vec<u32> = (0..30)
+        .map(|layer| u32::from((layer + 1) % 6 != 0))
+        .collect();
+    model
+        .with("gemma4.attention.sliding_window", Value::U32(64))
+        .with("gemma4.attention.key_length_swa", Value::U32(64))
+        .with("gemma4.attention.value_length_swa", Value::U32(64))
+        .with(
+            "gemma4.attention.sliding_window_pattern",
+            Value::U32s(pattern),
+        )
+}
+
+#[test]
+fn a_sliding_window_layer_caches_its_window_not_the_whole_context() {
+    // Twenty-five of the thirty layers attend to sixty-four tokens, at half
+    // the key width, and five attend to the whole 1024-token context. Charging
+    // every layer the full context at the full width is 30 MiB where the
+    // server allocates closer to 6.
+    //
+    // Measured on this estate: Gemma 4 26B derives 32,040 MiB against 16,764
+    // MiB it was found to hold, and the whole of that gap is this.
+    let dense = estimated("catalog-unwindowed", &windowed(false));
+    let sliding = estimated("catalog-windowed", &windowed(true));
+
+    assert!(
+        dense - sliding >= 23,
+        "a windowed model must cost far less than the same model attending \
+         fully on every layer: dense {dense} MiB, sliding {sliding} MiB"
+    );
+}
+
 fn small_model() -> Gguf {
     Gguf::model("tiny", 4, 8192, 256)
         .with("tiny.attention.head_count", Value::U32(4))

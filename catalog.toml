@@ -367,27 +367,29 @@ reasoning-preserve = "true"
 [models.turbo38]
 path = "llm/qwen/qwen3.8-27b-turbo-davidau/Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q6_K.gguf"
 projector_path = "llm/qwen/qwen3.8-27b-turbo-davidau/mmproj-F16.gguf"
-# 98304, and this entry is the reason `bench` exists. It shipped at 131072 on
-# a hand reading of 29064 MiB, taken by asking for eight tokens and watching
-# nvidia-smi either side. `bench` asks for a hundred and twenty-eight and
-# measured 29656, 29745 and 29745 on three consecutive runs -- past the 29347
-# MiB budget, and past its own declared figure, which is the direction that
-# ends a load half way through rather than merely refusing one.
+# The weights are trained to 262144 and 131072 is what a Q6 of them can afford:
+# at 262144 the cache alone wants 8704 MiB, which leaves 18140 for weights and
+# these are 22921. See turbo38-long for the other side of that trade.
 #
-# The hand reading was not wrong so much as taken against a busier card: a
-# larger idle baseline subtracted from a similar total leaves a smaller
-# difference. A measurement is a subtraction, and both ends of it move.
+# This briefly ran at 98304. `bench` measured it at 29745 here, past the 29347
+# MiB the router used to derive by holding a tenth of the card back, so the
+# context came down to fit a margin rather than the card. The margin is now
+# the operator's to set and this estate sets it to the whole device -- see
+# MAESTRO_MEMORY_BUDGET_MIB in the service file -- so the context goes back to
+# what the weights and the card actually allow.
+context_size = 131072
+# Measured 30033 MiB resident 2026-09-12 on an RTX 5090, answering an
+# eight-hundred-token request. `bench` reads 29745 for its own hundred and
+# twenty-eight, and the larger is the one declared: what an entry costs grows
+# with what is asked of it, and the figure has to cover the heavier ask.
 #
-# At 98304 it takes 28593, three times identically. 81920 would take 27889 and
-# buy nothing this needs. The weights are trained to 262144; what stops this
-# well short is the same arithmetic as before, only now with a number in it
-# that was measured properly.
-context_size = 98304
-# Measured 28593 MiB resident 2026-09-12 on an RTX 5090, by `model-router
-# bench`, three runs agreeing exactly. The margin is a hundredth rather than
-# this file's twentieth -- 30022 would be past the budget -- and 419 MiB is
-# what remains under it.
-memory_estimate_mib = 28928
+# The margin is deliberately smaller than this file's twentieth, for a reason
+# that only applies at this size. A twentieth is 31535, and the card idles at
+# about 1270 MiB with a desktop on it, leaving roughly 31330 free -- so a
+# figure that large leaves almost nothing between the declaration and the live
+# reading admission checks it against. Over-declaring stops being the safe
+# direction once the declared figure approaches what the device actually has.
+memory_estimate_mib = 30464
 reasoning_format = "deepseek"
 
 [models.turbo38.flags]

@@ -120,6 +120,20 @@ memory_estimate_mib = 29184
 reasoning_format = "deepseek"
 
 [models.qwen38.flags]
+# Qwen's own recommended sampling for thinking mode, which llama-server does
+# not arrive at on its own: it ships top-k 40 and min-p 0.05 where Qwen asks
+# for 20 and 0, so every entry in this family had been sampling against its
+# publisher's advice by simply not saying anything.
+#
+# Temperature is the 0.6 Qwen names for precise coding rather than the 1.0 it
+# names for general work, because what reaches this estate is mostly code and
+# tool calls, and 0.6/0.7 is what the tool-calling advice says too. These are
+# only the defaults the server starts with -- a request carrying its own
+# temperature overrides them, which is how creative work should ask.
+temp = "0.6"
+top-k = "20"
+top-p = "0.95"
+min-p = "0"
 ctk = "q8_0"
 ctv = "q8_0"
 fa = "on"
@@ -147,6 +161,11 @@ reasoning_format = "deepseek"
 reasoning_effort = "low"
 
 [models.qwen38-semantic.flags]
+# Qwen's recommended sampling, as set out on qwen38.
+temp = "0.6"
+top-k = "20"
+top-p = "0.95"
+min-p = "0"
 ctk = "q8_0"
 ctv = "q8_0"
 fa = "on"
@@ -279,6 +298,11 @@ reasoning_format = "deepseek"
 runtime = "fastmtp"
 
 [models.qwen38-uncensored.flags]
+# Qwen's recommended sampling, as set out on qwen38.
+temp = "0.6"
+top-k = "20"
+top-p = "0.95"
+min-p = "0"
 ctk = "q8_0"
 ctv = "q8_0"
 fa = "on"
@@ -324,6 +348,14 @@ memory_estimate_mib = 29184
 reasoning_format = "deepseek"
 
 [models.turbo38.flags]
+# Qwen's recommended sampling, as set out on qwen38. This tune's own card
+# repeats it, and adds that a temperature above 1 degrades the multiple-token
+# prediction and that the repeat penalty should stay off -- llama-server
+# leaves it off already, so only the first is a thing to keep in mind.
+temp = "0.6"
+top-k = "20"
+top-p = "0.95"
+min-p = "0"
 ctk = "q8_0"
 ctv = "q8_0"
 fa = "on"
@@ -361,6 +393,11 @@ memory_estimate_mib = 28928
 reasoning_format = "deepseek"
 
 [models.turbo38-long.flags]
+# Qwen's recommended sampling, as set out on qwen38.
+temp = "0.6"
+top-k = "20"
+top-p = "0.95"
+min-p = "0"
 ctk = "q8_0"
 ctv = "q8_0"
 fa = "on"

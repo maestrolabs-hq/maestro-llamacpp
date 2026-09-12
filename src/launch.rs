@@ -26,17 +26,18 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::process::ExitStatus;
 
+mod binary;
 mod invocation;
 mod probe;
 mod root;
 mod server;
 
+pub(crate) use binary::on_search_path;
 pub use root::models_root;
 pub use server::Server;
 // Shared with `memory`, which locates the device tool the same way this
 // module locates the server binary: a second copy of the walk would be the
 // duplication the gate exists to refuse.
-pub(crate) use server::on_search_path;
 
 /// Why a server could not be located, started, or resolved.
 ///

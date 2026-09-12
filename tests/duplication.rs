@@ -161,6 +161,39 @@ const ACCEPTED: &[(&str, &str)] = &[
          their tests would take the variable name and the configured value as \
          parameters, saying nothing either name did not already say.",
     ),
+    (
+        "as_residency <-> as_runtime",
+        "The same pair as `as_positive <-> as_residency`, for the same reason: \
+         both read text and phrase one refusal, so they share a shape. What \
+         they check does not overlap -- enum membership against which \
+         characters may name a binary -- and a merged converter would take \
+         the check as a parameter and be longer than both.",
+    ),
+    (
+        "as_text <-> as_runtime",
+        "`as_runtime` is `as_text` plus one guard, and calls it. Collapsing \
+         them means one function taking a predicate, which is what having two \
+         named converters exists to avoid.",
+    ),
+    (
+        "an_entry_naming_a_runtime_is_served_from_that_build \
+         <-> an_entry_naming_a_runtime_that_is_not_there_says_so_rather_than_falling_back",
+        "Both build one catalog, make one request and assert one status, \
+         because that shared shape is the contract. The causes differ and are \
+         the point: a runtime that is present must be used, and one that is \
+         absent must fail loudly rather than fall back to a server that \
+         cannot load the entry. Merging them would take the status as a \
+         parameter and stop naming either cause.",
+    ),
+    (
+        "entry <-> line",
+        "Two fixtures in `invocation.rs` matched on shape and nothing else: \
+         one builds an `Entry` literal, the other maps `of`'s output to \
+         strings. They share no line and no idea. The match arrived with the \
+         `runtime` field, which is the gate comparing structure rather than \
+         meaning, and recording it is cheaper than shaping a fixture around a \
+         similarity score.",
+    ),
 ];
 
 /// `path:lines function name <-> path:lines function name` -> `name <-> name`.

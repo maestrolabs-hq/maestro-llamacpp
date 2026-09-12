@@ -110,7 +110,11 @@ path = "llm/qwen/qwen3.8-27b/Qwen3.8-27B-UD-Q6_K.gguf"
 draft_path = "llm/qwen/qwen3.8-27b/MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
 projector_path = "llm/qwen/qwen3.8-27b/mmproj-F16.gguf"
 context_size = 131072
-memory_estimate_mib = 24576
+# Measured 28867 MiB resident 2026-09-12 on an RTX 5090 (32,607 MiB),
+# loaded and generating: a twentieth over, to a quarter gibibyte. The
+# declared 24576 was 4291 MiB under what it actually took, which is
+# the out-of-memory path rather than a rounding difference.
+memory_estimate_mib = 30464
 reasoning_format = "deepseek"
 
 [models.qwen38.flags]
@@ -130,7 +134,11 @@ path = "llm/qwen/qwen3.8-27b/Qwen3.8-27B-UD-Q6_K.gguf"
 draft_path = "llm/qwen/qwen3.8-27b/MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
 projector_path = "llm/qwen/qwen3.8-27b/mmproj-F16.gguf"
 context_size = 131072
-memory_estimate_mib = 24576
+# Measured 28862 MiB resident 2026-09-12 on an RTX 5090 (32,607 MiB),
+# loaded and generating: a twentieth over, to a quarter gibibyte. The
+# declared 24576 was 4286 MiB under what it actually took, which is
+# the out-of-memory path rather than a rounding difference.
+memory_estimate_mib = 30464
 reasoning_format = "deepseek"
 reasoning_effort = "low"
 
@@ -213,3 +221,110 @@ memory_estimate_mib = 1024
 
 [models.qwen3-06b.flags]
 n-gpu-layers = "0"
+
+# Qwen3.8 27B, uncensored HauhauCS fine-tune. The one entry on this estate that
+# needs a patched server: its draft is a separate FastMTP sidecar, and the
+# stock build refuses it with a tensor-shape error rather than an honest
+# missing-file one. `runtime` names the build; the machine says where it is, by
+# having `llama-server-fastmtp` on the search path.
+[models.qwen38-uncensored]
+path = "llm/qwen/qwen3.8-27b-uncensored-hauhaucs/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf"
+draft_path = "llm/qwen/qwen3.8-27b-uncensored-hauhaucs/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-FastMTP-32K.gguf"
+projector_path = "llm/qwen/qwen3.8-27b-uncensored-hauhaucs/mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
+context_size = 131072
+# Measured 26944 MiB resident 2026-09-12 on an RTX 5090 (32,607 MiB), by
+# `model-router bench` at 107 tok/s: a twentieth over, to a quarter gibibyte.
+memory_estimate_mib = 28416
+reasoning_format = "deepseek"
+runtime = "fastmtp"
+
+[models.qwen38-uncensored.flags]
+ctk = "q8_0"
+ctv = "q8_0"
+fa = "on"
+np = "1"
+kv-unified = "true"
+n-gpu-layers-draft = "999"
+spec-type = "draft-mtp"
+spec-draft-n-max = "3"
+spec-draft-p-min = "0"
+batch-size = "2048"
+ubatch-size = "512"
+split-mode = "none"
+load-mode = "mmap"
+image-min-tokens = "1024"
+reasoning-preserve = "true"
+
+# Qwopus 3.8 27B. Text only -- no projector, unlike its siblings -- and the
+# sampler settings are the publisher's recommended ones rather than defaults.
+[models.qwopus38]
+path = "llm/qwen/qwopus3.8-27b/Qwopus3.8-27B-UD-Q4_K_XL.gguf"
+context_size = 131072
+# Measured 22683 MiB resident 2026-09-12 on an RTX 5090, by `model-router
+# bench` at 111 tok/s: a twentieth over, to a quarter gibibyte. Worth noting
+# that arithmetic over the file size suggested 21504, which is below what it
+# actually took -- the guess would have been the out-of-memory path.
+memory_estimate_mib = 24064
+reasoning_format = "deepseek"
+
+[models.qwopus38.flags]
+ctk = "q8_0"
+ctv = "q8_0"
+fa = "on"
+np = "1"
+kv-unified = "true"
+spec-type = "draft-mtp"
+spec-draft-n-max = "2"
+spec-draft-p-min = "0"
+batch-size = "2048"
+ubatch-size = "512"
+split-mode = "none"
+load-mode = "mmap"
+reasoning-preserve = "true"
+temp = "0.3"
+top-p = "0.9"
+top-k = "40"
+
+# Gemma 4 26B. The cheapest of the large entries and by some way the fastest,
+# which is the trade its shorter context buys.
+[models.gemma4]
+path = "llm/google/gemma-4-26b/gemma-4-26B_q4_0-it.gguf"
+projector_path = "llm/google/gemma-4-26b/gemma-4-26B-it-mmproj.gguf"
+context_size = 32768
+# Measured 16764 MiB resident 2026-09-12 on an RTX 5090, by `model-router
+# bench` at 205 tok/s: a twentieth over, to a quarter gibibyte.
+memory_estimate_mib = 17664
+
+[models.gemma4.flags]
+fa = "on"
+np = "1"
+kv-unified = "true"
+
+# Ornith 1.5, 35B with 3B active. Its multiple-token prediction is built into
+# the weights rather than carried by a sidecar, so it runs on the stock server
+# despite the speculative flags.
+[models.ornith15]
+path = "llm/ornith/ornith-1.5-35b-a3b/Ornith-1.5-35B-Q5_K_M.gguf"
+projector_path = "llm/ornith/ornith-1.5-35b-a3b/mmproj-Ornith-1.5-35B-BF16.gguf"
+context_size = 65536
+# Measured 26765 MiB resident 2026-09-12 on an RTX 5090, by `model-router
+# bench` at 185 tok/s: a twentieth over, to a quarter gibibyte.
+memory_estimate_mib = 28160
+reasoning_format = "deepseek"
+
+[models.ornith15.flags]
+ctk = "q8_0"
+ctv = "q8_0"
+fa = "on"
+np = "1"
+kv-unified = "true"
+n-gpu-layers-draft = "999"
+spec-type = "draft-mtp"
+spec-draft-n-max = "3"
+spec-draft-p-min = "0"
+batch-size = "2048"
+ubatch-size = "512"
+split-mode = "none"
+load-mode = "mmap"
+image-min-tokens = "1024"
+reasoning-preserve = "true"

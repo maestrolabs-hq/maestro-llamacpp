@@ -121,6 +121,19 @@ pub struct Entry {
     /// cold page cache takes minutes. One value would be either too tight for
     /// the large entries or meaningless for the small ones.
     pub startup_timeout_seconds: u32,
+    /// Which build of the server this entry needs, when it needs a particular
+    /// one.
+    ///
+    /// A name, never a path: the catalog describes a set of models without
+    /// naming the machine they sit on, and a path to a binary is the most
+    /// machine-specific thing there is. The name selects `llama-server-<name>`
+    /// on the search path, so an operator points it at their build the way
+    /// they point at everything else -- by putting it where the router looks.
+    ///
+    /// `None` uses the server the router was started with. An entry needing a
+    /// patched build -- speculative decoding against a sidecar the stock
+    /// server cannot load -- names it, and the rest never think about it.
+    pub runtime: Option<String>,
     /// Server settings this router passes through without interpreting.
     pub flags: BTreeMap<String, String>,
 }

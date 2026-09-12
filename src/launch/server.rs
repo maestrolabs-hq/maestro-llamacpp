@@ -9,11 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use super::binary::{BINARY_NAME, on_search_path, runtime_binary, runtime_named};
 use super::{Child, Failure, Liveness, invocation, probe};
 use crate::catalog::Entry;
-
-/// What the server is called. Located on the search path, never bundled.
-const BINARY_NAME: &str = "llama-server";
 
 /// How often readiness is asked for while a model loads.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -162,6 +160,31 @@ impl Server {
     }
 
     /// A running child, before anything has asked whether it is ready.
+    /// The binary this entry is served from.
+    ///
+    /// The one the router was started with, unless the entry names a runtime.
+    /// A named one resolves on the search path as `llama-server-<name>`, which
+    /// is how an operator points at a second build without the catalog
+    /// carrying a path: the catalog says *which*, the machine says *where*.
+    ///
+    /// Resolved per start rather than once, because one router serves entries
+    /// that need different builds and a single binary chosen at startup cannot
+    /// be right for both.
+    fn binary_for(&self, entry: &Entry) -> Result<PathBuf, Failure> {
+        let Some(runtime) = entry.runtime.as_deref() else {
+            return Ok(self.binary.clone());
+        };
+
+        runtime_binary(runtime).ok_or_else(|| {
+            Failure::Unavailable(format!(
+                "entry '{}' needs the '{runtime}' runtime, and nothing named \
+                 '{}' is on the search path",
+                entry.id,
+                runtime_named(runtime)
+            ))
+        })
+    }
+
     fn spawn(&self, entry: &Entry, root: &Path) -> Result<Child, Failure> {
         // Checked before spawning, so a missing model is reported as a missing
         // model rather than as whatever exit status the server chooses for it.
@@ -190,7 +213,7 @@ impl Server {
         // open and the harness waits for an end-of-file that never comes.
         // Draining threads would keep the log, and belong to the slice that
         // has somewhere to put it.
-        let process = Command::new(&self.binary)
+        let process = Command::new(self.binary_for(entry)?)
             .args(invocation::of(entry, root, port))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -209,16 +232,6 @@ impl Server {
             process,
         })
     }
-}
-
-/// The first match for a name on the search path, with the platform's
-/// executable suffix, so the Windows leg finds `llama-server.exe`.
-pub(crate) fn on_search_path(name: &str) -> Option<PathBuf> {
-    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
-    let search = std::env::var_os("PATH")?;
-    std::env::split_paths(&search)
-        .map(|directory| directory.join(&file))
-        .find(|candidate| candidate.is_file())
 }
 
 /// A loopback port the operating system says is free.

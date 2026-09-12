@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use toml::{Table, Value};
 
 use super::field::{
-    as_location, as_positive, as_residency, as_text, flags, optional, problem, report_unknown,
-    required, table_at,
+    as_location, as_positive, as_residency, as_runtime, as_text, flags, optional, problem,
+    report_unknown, required, table_at,
 };
 use super::{Entry, Report, Residency};
 
@@ -24,6 +24,7 @@ const ENTRY_FIELDS: &[&str] = &[
     "residency",
     "memory_estimate_mib",
     "reasoning_format",
+    "runtime",
     "reasoning_effort",
     "startup_timeout_seconds",
     "flags",
@@ -36,6 +37,7 @@ const DEFAULT_FIELDS: &[&str] = &[
     "residency",
     "memory_estimate_mib",
     "reasoning_format",
+    "runtime",
     "reasoning_effort",
     "startup_timeout_seconds",
     "flags",
@@ -58,6 +60,7 @@ pub(super) struct Defaults {
     pub residency: Option<Residency>,
     pub memory_estimate_mib: Option<u32>,
     pub reasoning_format: Option<String>,
+    pub runtime: Option<String>,
     pub reasoning_effort: Option<String>,
     pub startup_timeout_seconds: Option<u32>,
     pub flags: BTreeMap<String, String>,
@@ -122,6 +125,7 @@ fn defaults(table: &Table, problems: &mut Vec<String>) -> Defaults {
             as_positive,
         ),
         reasoning_format: optional(inner, DEFAULTS, "reasoning_format", problems, as_text),
+        runtime: optional(inner, DEFAULTS, "runtime", problems, as_runtime),
         reasoning_effort: optional(inner, DEFAULTS, "reasoning_effort", problems, as_text),
         startup_timeout_seconds: optional(
             inner,
@@ -186,6 +190,8 @@ fn entry(id: &str, value: &Value, defaults: &Defaults, out: &mut Drafts) -> Opti
         .unwrap_or(Residency::OnDemand);
     let reasoning_format = optional(table, &scope, "reasoning_format", problems, as_text)
         .or_else(|| defaults.reasoning_format.clone());
+    let runtime = optional(table, &scope, "runtime", problems, as_runtime)
+        .or_else(|| defaults.runtime.clone());
     let reasoning_effort = optional(table, &scope, "reasoning_effort", problems, as_text)
         .or_else(|| defaults.reasoning_effort.clone());
     let startup_timeout_seconds = optional(
@@ -213,6 +219,7 @@ fn entry(id: &str, value: &Value, defaults: &Defaults, out: &mut Drafts) -> Opti
         residency,
         memory_estimate_mib: memory_estimate_mib.unwrap_or_default(),
         reasoning_format,
+        runtime,
         reasoning_effort,
         startup_timeout_seconds,
         flags: merged,

@@ -114,6 +114,29 @@ pub(super) fn as_residency(value: &Value) -> Result<Residency, String> {
     })
 }
 
+/// A runtime name, which becomes part of a binary name on the search path.
+///
+/// Restricted to lowercase letters, digits and hyphens because that is what a
+/// binary suffix can safely be: anything carrying a separator, a dot or a
+/// space would let a catalog reach a file the operator never meant to name.
+/// A catalog is configuration, and configuration that can choose an arbitrary
+/// executable is configuration that can do anything.
+pub(super) fn as_runtime(value: &Value) -> Result<String, String> {
+    let text = as_text(value)?;
+    let usable = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if usable {
+        Ok(text)
+    } else {
+        Err(format!(
+            "must be lowercase letters, digits and hyphens, because it names \
+             a binary beside llama-server, but is '{text}'"
+        ))
+    }
+}
+
 /// The refusal reason comes from [`RelativePath`], which owns what makes a
 /// location unacceptable.
 pub(super) fn as_location(value: &Value) -> Result<RelativePath, String> {

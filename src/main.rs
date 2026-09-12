@@ -31,10 +31,12 @@ const USAGE: &str = "usage: model-router check <catalog>\n       \
 /// The one public port the design names.
 const DEFAULT_ADDRESS: &str = "127.0.0.1:8080";
 
+mod check;
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
-        [command, catalog] if command == "check" => check(Path::new(catalog)),
+        [command, catalog] if command == "check" => check::check(Path::new(catalog)),
         [command, catalog, id] if command == "launch" => match launch(Path::new(catalog), id) {
             Ok(()) => ExitCode::SUCCESS,
             Err(complaint) => {
@@ -191,36 +193,4 @@ fn launch(catalog: &Path, id: &str) -> Result<(), String> {
     child.stop();
     println!("{id} stopped");
     Ok(())
-}
-
-/// Reports whether a catalog is usable, and why not when it is not.
-///
-/// Every problem is printed, not the first, so one run of this command covers
-/// one round of edits to the file.
-fn check(catalog: &Path) -> ExitCode {
-    let text = match fs::read_to_string(catalog) {
-        Ok(text) => text,
-        Err(error) => {
-            eprintln!("cannot read {}: {error}", catalog.display());
-            return ExitCode::FAILURE;
-        }
-    };
-
-    match Catalog::parse(&text) {
-        Ok(parsed) => {
-            println!(
-                "{} is valid: {} models",
-                catalog.display(),
-                parsed.entries.len()
-            );
-            ExitCode::SUCCESS
-        }
-        Err(report) => {
-            eprintln!("{} is not usable:", catalog.display());
-            for problem in report.problems() {
-                eprintln!("  {problem}");
-            }
-            ExitCode::FAILURE
-        }
-    }
 }

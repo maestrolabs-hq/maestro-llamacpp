@@ -163,6 +163,10 @@ fn entry(
         startup_timeout_seconds: defaults
             .startup_timeout_seconds
             .unwrap_or(DEFAULT_STARTUP_TIMEOUT_SECONDS),
+        // A discovered entry takes the stock server. Which build a model needs
+        // is not a thing a file name can say, so it is not a thing discovery
+        // may guess at -- a catalog states it or it is not wanted.
+        runtime: None,
         flags: defaults.flags.clone(),
     };
     match estimate::derive(&entry, root) {

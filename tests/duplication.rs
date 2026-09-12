@@ -102,8 +102,8 @@ const ACCEPTED: &[(&str, &str)] = &[
         "The same as the pair above, with the other protection rule.",
     ),
     (
-        "start <-> spawn",
-        "start is spawn plus the readiness loop, and delegates to it -- the \
+        "attempt <-> spawn",
+        "attempt is spawn plus the readiness loop, and delegates to it -- the \
          same relationship as optional and required above. What they share is \
          the shape every fallible step in that module has: do one thing, and \
          name the entry when it fails. That is the module's error contract \

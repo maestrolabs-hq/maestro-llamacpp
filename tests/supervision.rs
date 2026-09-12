@@ -145,6 +145,65 @@ fn a_child_that_exits_while_loading_fails_with_its_status_not_the_budget() {
     );
 }
 
+/// `free_port` releases a port before the child binds it; under enough
+/// concurrent spawns something else takes it first, and the child exits on
+/// its own first bind attempt without ever being reachable. The
+/// `never-bind-marker` flag reproduces exactly that shape deterministically:
+/// the first run exits before touching the socket at all, and a second run
+/// with the same marker behaves normally, standing in for the retry landing
+/// on a fresh port that binds.
+#[test]
+fn a_child_that_loses_the_port_race_once_still_starts_on_the_retry() {
+    let root = ModelsRoot::with(&[MODEL]);
+    let mut entry = entry("racer");
+    let marker = std::env::temp_dir().join(format!(
+        "maestro-llamacpp-never-bind-marker-{}",
+        std::process::id()
+    ));
+    drop(std::fs::remove_file(&marker));
+    entry
+        .flags
+        .insert("never-bind-marker".to_owned(), marker.display().to_string());
+
+    let mut child = server()
+        .start(&entry, root.path())
+        .expect("the retry lands on a fresh port and the second run answers");
+
+    assert_eq!(
+        health(child.endpoint()),
+        Some(200),
+        "the child that actually answers is the retried one, not the one that \
+         lost the race"
+    );
+    child.stop();
+    drop(std::fs::remove_file(&marker));
+}
+
+/// The retry is bounded at one: a child that loses the race on both its
+/// attempts is a real failure, not an infinite loop.
+#[test]
+fn a_child_that_never_binds_still_fails_after_one_retry() {
+    let root = ModelsRoot::with(&[MODEL]);
+    let mut entry = entry("neverbinds");
+    entry
+        .flags
+        .insert("never-bind".to_owned(), "true".to_owned());
+
+    let failure = server()
+        .start(&entry, root.path())
+        .expect_err("neither attempt ever binds");
+
+    assert!(
+        matches!(failure, Failure::Unavailable(_)),
+        "exhausting the one retry is still reported as the child failing to \
+         start: {failure:?}"
+    );
+    assert!(
+        failure.to_string().contains("neverbinds"),
+        "naming the entry:\n{failure}"
+    );
+}
+
 #[test]
 fn stopping_a_child_terminates_it_and_check_reports_the_exit() {
     let root = ModelsRoot::with(&[MODEL]);

@@ -182,7 +182,7 @@ spec-draft-n-max = "3"
 # hand. It is what `models.ini` points at today.
 [models.gemma3]
 path = ".cache/llama.cpp/models--ggml-org--gemma-3-1b-it-GGUF/snapshots/f9c28bcd85737ffc5aef028638d3341d49869c27/gemma-3-1b-it-Q4_K_M.gguf"
-memory_estimate_mib = 2048
+memory_estimate_mib = 2560
 startup_timeout_seconds = 60
 
 [models.gemma3.flags]
@@ -607,18 +607,32 @@ kv-unified = "true"
 # its model in the body exactly as /v1/chat/completions does -- so nothing in
 # the router needed changing to reach it.
 #
-# Qwen3-Embedding rather than the all-MiniLM-L6-v2 that would be the reflex:
-# MiniLM stops at 512 positions against this one's 32768, which is the whole
-# question when what gets embedded is a file rather than a sentence, and it
-# returns 384 dimensions against 1024.
+# bge-m3 and not the Qwen3-Embedding-0.6B this entry first carried, nor the
+# all-MiniLM-L6-v2 that would be the reflex, because the three were measured
+# against each other on 276 chunks of this repository's own comments with ten
+# questions whose right answer was known:
+#
+#   BM25 over the same chunks           MRR 0.362, 3 of 10 first
+#   Qwen3-Embedding-0.6B                MRR 0.315, 2 of 10 first
+#   bge-m3                              MRR 0.560, 4 of 10 first
+#
+# Qwen was given its documented `Instruct:` query prefix, which is worth the 1
+# to 5 percent its card claims and does not close that. MiniLM was not run: it
+# stops at 512 positions, and the chunks here are longer than that.
+#
+# Published by ggml-org, which is llama.cpp's own account, so the file is
+# known to load rather than hoped to.
 [models.embed]
-path = "llm/qwen/qwen3-embedding-0.6b/Qwen3-Embedding-0.6B-Q8_0.gguf"
-context_size = 32768
-# Measured 5078 MiB resident 2026-09-12 on an RTX 5090, returning vectors: a
-# twentieth over, to a quarter gibibyte. Nearly all of it is the cache for a
-# 32768 window rather than the 610 MiB of weights, which is the price of
-# embedding a file in one pass instead of a paragraph.
-memory_estimate_mib = 5376
+path = "llm/baai/bge-m3/bge-m3-q8_0.gguf"
+# 8194 is this model's whole trained window, against Qwen3-Embedding's 32768.
+# That was the one axis on which Qwen looked better and the reason it was
+# chosen first; retrieval quality on the actual corpus outweighed it.
+context_size = 8192
+# DERIVED, NOT MEASURED -- the card was busy with another application when this
+# entry landed, so this is the estimator's figure rather than a reading from
+# nvidia-smi. Every other entry in this file was measured loaded, and this one
+# should be brought in line when the device is free.
+memory_estimate_mib = 2560
 
 [models.embed.flags]
 # `embeddings` is what makes this an embedding server, and it is exclusive:
@@ -626,15 +640,11 @@ memory_estimate_mib = 5376
 # That is why this is its own entry over its own weights rather than a flag on
 # something else.
 embeddings = "true"
-# Last-token pooling, which is how this model was trained -- the vector is the
-# final position's hidden state, not an average over the passage. Left to the
-# server's default it would read the file's own setting, and saying it here
-# means a file that omits it still gets the right one.
-pooling = "last"
-temp = "0.6"
-top-k = "20"
-top-p = "0.95"
-min-p = "0"
+# BGE pools the classifier token, where Qwen3-Embedding took the last one.
+# Getting this wrong returns vectors of the right shape that mean nothing,
+# which is why the entry was checked against known-related text rather than
+# only for a 200.
+pooling = "cls"
 fa = "on"
 np = "1"
 kv-unified = "true"

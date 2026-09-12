@@ -110,11 +110,13 @@ path = "llm/qwen/qwen3.8-27b/Qwen3.8-27B-UD-Q6_K.gguf"
 draft_path = "llm/qwen/qwen3.8-27b/MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
 projector_path = "llm/qwen/qwen3.8-27b/mmproj-F16.gguf"
 context_size = 131072
-# Measured 28867 MiB resident 2026-09-12 on an RTX 5090 (32,607 MiB),
-# loaded and generating: a twentieth over, to a quarter gibibyte. The
-# declared 24576 was 4291 MiB under what it actually took, which is
-# the out-of-memory path rather than a rounding difference.
-memory_estimate_mib = 30464
+# Measured 28867 MiB resident 2026-09-12 on an RTX 5090 (32,607 MiB), loaded
+# and generating. The margin over it is deliberately thin -- a twentieth put
+# this at 30464, above the 29347 MiB the router derives from the device, so
+# the entry was refused for room it plainly had. A 27B model at 131K context
+# nearly fills this card, and admission re-checks what the device actually
+# reports free, which is the backstop a thin margin leans on.
+memory_estimate_mib = 29184
 reasoning_format = "deepseek"
 
 [models.qwen38.flags]
@@ -134,11 +136,13 @@ path = "llm/qwen/qwen3.8-27b/Qwen3.8-27B-UD-Q6_K.gguf"
 draft_path = "llm/qwen/qwen3.8-27b/MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
 projector_path = "llm/qwen/qwen3.8-27b/mmproj-F16.gguf"
 context_size = 131072
-# Measured 28862 MiB resident 2026-09-12 on an RTX 5090 (32,607 MiB),
-# loaded and generating: a twentieth over, to a quarter gibibyte. The
-# declared 24576 was 4286 MiB under what it actually took, which is
-# the out-of-memory path rather than a rounding difference.
-memory_estimate_mib = 30464
+# Measured 28867 MiB resident 2026-09-12 on an RTX 5090 (32,607 MiB), loaded
+# and generating. The margin over it is deliberately thin -- a twentieth put
+# this at 30464, above the 29347 MiB the router derives from the device, so
+# the entry was refused for room it plainly had. A 27B model at 131K context
+# nearly fills this card, and admission re-checks what the device actually
+# reports free, which is the backstop a thin margin leans on.
+memory_estimate_mib = 29184
 reasoning_format = "deepseek"
 reasoning_effort = "low"
 
@@ -199,7 +203,12 @@ kv-unified = "true"
 # safe direction, and recorded rather than tuned.
 [models.qwen3-4b]
 path = "llm/qwen/qwen3-4b/Qwen3-4B-Q4_K_M.gguf"
-residency = "resident"
+# On-demand, not resident. Pinned to the processor with `n-gpu-layers = 0`,
+# so it holds 787 MiB of the device and roughly 7.4 GiB of system memory --
+# and the budget it is charged against is derived from the device. Resident,
+# it reserved a quarter of that budget and refused every 27B entry, for a
+# model that answers at ten tokens a second and loads in three.
+residency = "on-demand"
 memory_estimate_mib = 4096
 
 [models.qwen3-4b.flags]

@@ -443,6 +443,45 @@ fn one_entry(estimate: &str) -> String {
 }
 
 #[test]
+fn an_embedding_entry_is_not_charged_a_cache_it_never_keeps() {
+    // A server started with `embeddings` answers one forward pass at a time and
+    // keeps nothing between them: there is no conversation to remember, so the
+    // key-value cache a generative entry pays for all session is never
+    // allocated. Charging it anyway refuses room the entry does not want.
+    //
+    // Measured on this estate: bge-m3 at 8192 derived 2428 MiB against 880 MiB
+    // it was found to hold, and the whole of that gap is this.
+    let scratch = Scratch::new("catalog-embedding");
+    layered(None).write(&scratch.path().join("a/model.gguf"), 64 * MIB);
+
+    let generative = Catalog::read(&one_entry(""), scratch.path())
+        .expect("derivable")
+        .catalog
+        .entry("alpha")
+        .expect("alpha")
+        .memory_estimate_mib;
+    let embedding = Catalog::read(
+        &format!(
+            "{}\n[models.alpha.flags]\nembeddings = \"true\"\n",
+            one_entry("")
+        ),
+        scratch.path(),
+    )
+    .expect("derivable")
+    .catalog
+    .entry("alpha")
+    .expect("alpha")
+    .memory_estimate_mib;
+
+    assert!(
+        generative - embedding >= 24,
+        "an embedding entry must not be charged the 32 MiB of cache the same \
+         weights cost a generative one: generative {generative} MiB, \
+         embedding {embedding} MiB"
+    );
+}
+
+#[test]
 fn an_absent_estimate_is_derived_from_the_files() {
     let scratch = Scratch::new("catalog-derive");
     small_model().write(&scratch.path().join("a/model.gguf"), 64 * MIB);

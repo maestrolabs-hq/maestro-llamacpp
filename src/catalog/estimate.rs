@@ -115,8 +115,21 @@ pub(super) fn derive(entry: &Entry, root: &Path) -> Result<Derived, String> {
         .ok()
         .and_then(|metadata| cache_bytes(&metadata, entry.context_size, keys, values))
     {
+        // Zeroed rather than skipped: the metadata was read and the basis is
+        // still what the file said, so this stays the metadata arm. Routing an
+        // embedding entry to the arm below would charge it a quarter of its
+        // weights as a cache proxy -- a smaller wrong answer, reported as
+        // though nothing had been read.
         Some(model_cache) => (
-            weights + model_cache + cache + weights * 5 / 100 + u128::from(OVERHEAD_BYTES),
+            weights
+                + if embeds_only(&entry.flags) {
+                    0
+                } else {
+                    model_cache
+                }
+                + cache
+                + weights * 5 / 100
+                + u128::from(OVERHEAD_BYTES),
             Basis::Metadata,
         ),
         None => (
@@ -126,6 +139,29 @@ pub(super) fn derive(entry: &Entry, root: &Path) -> Result<Derived, String> {
     };
     let mib = u32::try_from(bytes.div_ceil(u128::from(MIB))).unwrap_or(u32::MAX);
     Ok(Derived { mib, basis })
+}
+
+/// Whether the entry is served for embeddings rather than for generation.
+///
+/// A server started with `embeddings` answers one forward pass at a time and
+/// keeps nothing between them. There is no conversation to remember, so the
+/// key-value cache a generative entry holds for the length of a session is
+/// never allocated -- and the context size, which for those entries is the
+/// largest term in the sum, here only bounds how long one passage may be.
+///
+/// Read from the flag the server itself keys on, as `predicts_tokens` beside
+/// it reads `spec-type`. Both answer the same shape of question: the file says
+/// what a model *could* cost, and the flags say what this way of running it
+/// actually will.
+///
+/// Measured on this estate: bge-m3 at a context of 8192 derived 2428 MiB
+/// against the 880 MiB it was found to hold, and the whole of that gap was a
+/// cache the child never asked the device for.
+fn embeds_only(flags: &BTreeMap<String, String>) -> bool {
+    ["embeddings", "embedding"]
+        .iter()
+        .find_map(|name| flags.get(*name))
+        .is_some_and(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "false" | "0"))
 }
 
 /// Whether the draft is a prediction head rather than a model of its own.

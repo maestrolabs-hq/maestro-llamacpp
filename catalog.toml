@@ -628,11 +628,13 @@ path = "llm/baai/bge-m3/bge-m3-q8_0.gguf"
 # That was the one axis on which Qwen looked better and the reason it was
 # chosen first; retrieval quality on the actual corpus outweighed it.
 context_size = 8192
-# DERIVED, NOT MEASURED -- the card was busy with another application when this
-# entry landed, so this is the estimator's figure rather than a reading from
-# nvidia-smi. Every other entry in this file was measured loaded, and this one
-# should be brought in line when the device is free.
-memory_estimate_mib = 2560
+# Measured 880 MiB resident 2026-09-12 on an RTX 5090, returning vectors: a
+# twentieth over, to a quarter gibibyte. It first shipped at 2560, derived
+# rather than measured because the device was busy, and the reading is what
+# found the estimator charging every embedding entry a cache it never keeps --
+# fixed in `embeds_only`, which took the derivation from 2428 to 1660. What
+# remains above the measurement is the fixed overhead every entry carries.
+memory_estimate_mib = 1024
 
 [models.embed.flags]
 # `embeddings` is what makes this an embedding server, and it is exclusive:

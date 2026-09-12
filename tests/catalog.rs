@@ -264,6 +264,54 @@ const MIB: u64 = 1024 * 1024;
 /// At 1024 tokens of f16 cache that is 4 x 1024 x 2 x (64 + 64) x 2 bytes,
 /// which is 2 MiB, on top of 64 MiB of weights, 5 percent of those for
 /// fragmentation, and 1024 MiB of fixed overhead: 1093.2 MiB, rounded up.
+/// A model of many layers, optionally declaring how often one of them is a
+/// full-attention layer.
+///
+/// Sixty-four layers at the one-thousand-and-twenty-four-token context of
+/// `one_entry` is 32 MiB of f16 cache when every layer keeps one, which is
+/// large enough that a quarter of it cannot be mistaken for rounding.
+fn layered(full_attention_interval: Option<u32>) -> Gguf {
+    let model = Gguf::model("qwen35", 64, 8192, 256)
+        .with("qwen35.attention.head_count", Value::U32(4))
+        .with("qwen35.attention.head_count_kv", Value::U32(2));
+    match full_attention_interval {
+        Some(interval) => model.with("qwen35.full_attention_interval", Value::U32(interval)),
+        None => model,
+    }
+}
+
+/// What one layered model's entry is estimated at.
+fn estimated(label: &str, model: &Gguf) -> u32 {
+    let scratch = Scratch::new(label);
+    model.write(&scratch.path().join("a/model.gguf"), 64 * MIB);
+    Catalog::read(&one_entry(""), scratch.path())
+        .expect("derivable")
+        .catalog
+        .entry("alpha")
+        .expect("alpha")
+        .memory_estimate_mib
+}
+
+#[test]
+fn a_hybrid_model_caches_only_its_full_attention_layers() {
+    // A hybrid keeps a key-value cache on one layer in every
+    // `full_attention_interval`; the rest carry a recurrent state whose size
+    // does not grow with the context. Counting a cache for all of them is the
+    // difference between an estimate and a refusal: measured on this estate,
+    // Qwen3.8 27B declares sixty-five layers and an interval of four, and
+    // charging all sixty-five put its estimate 14 GiB above what it was then
+    // measured to hold.
+    let dense = estimated("catalog-dense", &layered(None));
+    let hybrid = estimated("catalog-hybrid", &layered(Some(4)));
+
+    assert_eq!(
+        dense - hybrid,
+        24,
+        "one layer in four keeps a cache, so three quarters of the 32 MiB \
+         goes: dense {dense} MiB, hybrid {hybrid} MiB"
+    );
+}
+
 fn small_model() -> Gguf {
     Gguf::model("tiny", 4, 8192, 256)
         .with("tiny.attention.head_count", Value::U32(4))

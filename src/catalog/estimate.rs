@@ -41,18 +41,16 @@ use std::path::{Path, PathBuf};
 
 use crate::gguf::Metadata;
 
+mod cache;
+
+use cache::{cache_bytes, sixteenths};
+
 use super::Entry;
 
 const MIB: u64 = 1024 * 1024;
 
 /// The device context and compute buffers.
 const OVERHEAD_BYTES: u64 = 1024 * MIB;
-
-/// Bytes per cached element, in sixteenths, so a quantised cache is exact.
-const F16: u64 = 32;
-const F32: u64 = 64;
-const Q8_0: u64 = 17;
-const Q4_0: u64 = 9;
 
 /// What the figure was worked out from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,25 +128,6 @@ pub(super) fn derive(entry: &Entry, root: &Path) -> Result<Derived, String> {
     Ok(Derived { mib, basis })
 }
 
-/// Keys and values for every layer at this context, or `None` when the
-/// metadata does not say enough to work it out.
-fn cache_bytes(metadata: &Metadata, context: u32, keys: u64, values: u64) -> Option<u128> {
-    let layers = metadata.of_model("block_count")?;
-    let heads = metadata.of_model("attention.head_count");
-    let kv_heads = metadata.of_model("attention.head_count_kv").or(heads)?;
-    let key_length = match metadata.of_model("attention.key_length") {
-        Some(length) => length,
-        None => metadata.of_model("embedding_length")?.checked_div(heads?)?,
-    };
-    let value_length = metadata
-        .of_model("attention.value_length")
-        .unwrap_or(key_length);
-    let per_token = u128::from(kv_heads)
-        * (u128::from(key_length) * u128::from(keys)
-            + u128::from(value_length) * u128::from(values));
-    Some(u128::from(layers) * u128::from(context) * per_token / 16)
-}
-
 /// Whether the draft is a prediction head rather than a model of its own.
 ///
 /// Read from `spec-type`, which is what the server itself keys on, rather than
@@ -160,20 +139,6 @@ fn predicts_tokens(flags: &BTreeMap<String, String>) -> bool {
         .iter()
         .find_map(|name| flags.get(*name))
         .is_some_and(|spelling| spelling.trim().to_ascii_lowercase().contains("mtp"))
-}
-
-/// The bytes per cached element the flags ask for, in sixteenths.
-fn sixteenths(flags: &BTreeMap<String, String>, names: [&str; 2]) -> u64 {
-    let spelling = names
-        .iter()
-        .find_map(|name| flags.get(*name))
-        .map_or("f16", String::as_str);
-    match spelling {
-        "f32" => F32,
-        "q8_0" => Q8_0,
-        "q4_0" => Q4_0,
-        _ => F16,
-    }
 }
 
 /// The size of the model file, plus every other shard when it is split.
@@ -285,24 +250,6 @@ mod tests {
         assert!(
             !predicts_tokens(&flags),
             "a plain draft is a model of its own and keeps its own cache"
-        );
-    }
-
-    #[test]
-    fn a_cache_type_the_flags_do_not_name_is_read_as_f16() {
-        let mut flags = BTreeMap::new();
-        assert_eq!(sixteenths(&flags, ["ctk", "cache-type-k"]), F16);
-        flags.insert("cache-type-k".to_owned(), "q4_0".to_owned());
-        assert_eq!(
-            sixteenths(&flags, ["ctk", "cache-type-k"]),
-            Q4_0,
-            "either spelling is honoured"
-        );
-        flags.insert("ctk".to_owned(), "something-new".to_owned());
-        assert_eq!(
-            sixteenths(&flags, ["ctk", "cache-type-k"]),
-            F16,
-            "a spelling this does not know is costed as f16, the safe side"
         );
     }
 }

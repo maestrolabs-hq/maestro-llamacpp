@@ -570,3 +570,71 @@ split-mode = "none"
 load-mode = "mmap"
 image-min-tokens = "1024"
 reasoning-preserve = "true"
+
+# MiniCPM5 2B, the small model this estate did not have. The two Qwen3s below
+# 4B are pinned to the processor and answer at walking pace; gemma3 is a 1B at
+# its trained ceiling. This one is `llama` by architecture, so the stock server
+# takes it with nothing special, and it is the only entry under 20B that runs
+# wholly on the device.
+[models.minicpm5]
+path = "llm/openbmb/minicpm5-2b/MiniCPM5-2B-Q8_0.gguf"
+# The whole 131072 these weights carry, which a model this small can simply
+# afford: 42 layers over 2 key-value heads is a cache measured in hundreds of
+# bytes per token, where the 27B entries spend thousands.
+context_size = 131072
+# Measured 5973 MiB resident 2026-09-12 on an RTX 5090, loaded and answering,
+# and it answered in a second: a twentieth over, to a quarter gibibyte. The
+# whole 131072 costs this entry less than gemma4 spends on weights alone.
+memory_estimate_mib = 6400
+
+[models.minicpm5.flags]
+# Qwen's figures do not apply here -- this is OpenBMB's model on Meta's
+# architecture -- so these are the publisher's own, read from its
+# generation_config.json.
+temp = "0.6"
+top-k = "20"
+top-p = "0.95"
+min-p = "0"
+ctk = "q8_0"
+ctv = "q8_0"
+fa = "on"
+np = "1"
+kv-unified = "true"
+
+# The estate's first embedding model, and the reason it is not a chat one: a
+# vector for a passage is not a thing a 27B should be woken to produce. Served
+# through the same generic endpoint as everything else -- /v1/embeddings names
+# its model in the body exactly as /v1/chat/completions does -- so nothing in
+# the router needed changing to reach it.
+#
+# Qwen3-Embedding rather than the all-MiniLM-L6-v2 that would be the reflex:
+# MiniLM stops at 512 positions against this one's 32768, which is the whole
+# question when what gets embedded is a file rather than a sentence, and it
+# returns 384 dimensions against 1024.
+[models.embed]
+path = "llm/qwen/qwen3-embedding-0.6b/Qwen3-Embedding-0.6B-Q8_0.gguf"
+context_size = 32768
+# Measured 5078 MiB resident 2026-09-12 on an RTX 5090, returning vectors: a
+# twentieth over, to a quarter gibibyte. Nearly all of it is the cache for a
+# 32768 window rather than the 610 MiB of weights, which is the price of
+# embedding a file in one pass instead of a paragraph.
+memory_estimate_mib = 5376
+
+[models.embed.flags]
+# `embeddings` is what makes this an embedding server, and it is exclusive:
+# a child started with it answers /v1/embeddings and refuses chat outright.
+# That is why this is its own entry over its own weights rather than a flag on
+# something else.
+embeddings = "true"
+# Last-token pooling, which is how this model was trained -- the vector is the
+# final position's hidden state, not an average over the passage. Left to the
+# server's default it would read the file's own setting, and saying it here
+# means a file that omits it still gets the right one.
+pooling = "last"
+temp = "0.6"
+top-k = "20"
+top-p = "0.95"
+min-p = "0"
+fa = "on"
+np = "1"
+kv-unified = "true"

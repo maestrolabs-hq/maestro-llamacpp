@@ -191,6 +191,22 @@ const ACCEPTED: &[(&str, &str)] = &[
          what the device and every child report. They are alike only in \
          having one parameter and passing the rest on.",
     ),
+    (
+        "list <-> catalogue",
+        "The two shapes of the model listing, already sharing everything they \
+         can: the envelope is `listing`, and what remains in each is only the \
+         per-entry shape its own client reads. That is precisely where they \
+         differ -- one carries names, the other status, source and context -- \
+         and a single function taking every field would hide the difference \
+         rather than express it.",
+    ),
+    (
+        "list <-> properties",
+        "Both are now one expression: build a small JSON value and reply with \
+         it. The shape they share is that sentence, which is what answering \
+         from the catalog *is*. There is nothing left to factor without \
+         inventing a parameter for the value itself.",
+    ),
 ];
 
 /// `path:lines function name <-> path:lines function name` -> `name <-> name`.

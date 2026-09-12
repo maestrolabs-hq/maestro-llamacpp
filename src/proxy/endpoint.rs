@@ -21,6 +21,16 @@ const GENERIC: &str = "/v1/";
 /// The path the router answers from its own catalog.
 const LISTING: &str = "/v1/models";
 
+/// The path a llama.cpp client reads the catalogue from, in router mode.
+///
+/// The same word as [`DEDICATED`] without a model after it, which is what
+/// makes the two tell apart cleanly: a dedicated request always carries a
+/// model *and* a path after it, so `/models` alone can only be this.
+const CATALOGUE: &str = "/models";
+
+/// The path a llama.cpp client reads the server's own settings from.
+const PROPERTIES: &str = "/props";
+
 /// Which endpoint a path addressed, and what the child is asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Endpoint {
@@ -30,6 +40,12 @@ pub(super) enum Endpoint {
     Generic { suffix: String },
     /// `/v1/models`: the router answers this itself.
     Listing,
+    /// `/models`: the same question in the shape a llama.cpp client asks it,
+    /// which carries each entry's status rather than only its name.
+    Catalogue,
+    /// `/props`: what the server itself does, which is how a client decides
+    /// whether it is talking to a router at all.
+    Properties,
 }
 
 impl Endpoint {
@@ -40,6 +56,18 @@ impl Endpoint {
     /// Returns a [`Failure`] when the path is neither shape, or when it names
     /// a model with nothing after it.
     pub(super) fn of(path: &str) -> Result<Self, Failure> {
+        // Before the dedicated shape, which would otherwise read `/models/`
+        // as a model named nothing. A trailing slash is the same request
+        // either way: a client that adds one is not asking for something
+        // else.
+        let bare = path.trim_end_matches('/');
+        if bare == CATALOGUE {
+            return Ok(Self::Catalogue);
+        }
+        if bare == PROPERTIES {
+            return Ok(Self::Properties);
+        }
+
         if let Some(rest) = path.strip_prefix(DEDICATED) {
             return match rest.split_once('/') {
                 Some((id, suffix)) if !id.is_empty() && !suffix.is_empty() => Ok(Self::Dedicated {
@@ -85,6 +113,8 @@ impl Endpoint {
             // its own path rather than an empty string so the value is honest
             // if anything ever reads it.
             Self::Listing => LISTING,
+            Self::Catalogue => CATALOGUE,
+            Self::Properties => PROPERTIES,
         }
     }
 }

@@ -11,6 +11,8 @@
 use std::io::{BufReader, Write};
 use std::net::TcpStream;
 
+mod own;
+
 use super::endpoint::Endpoint;
 use super::head::Length;
 use super::{Shared, body, head, relay};
@@ -40,6 +42,8 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
             Endpoint::Dedicated { id, .. } => format!("entry '{id}'"),
             Endpoint::Generic { .. } => "the generic endpoint".to_owned(),
             Endpoint::Listing => "the model listing".to_owned(),
+            Endpoint::Catalogue => "the catalogue".to_owned(),
+            Endpoint::Properties => "the server's properties".to_owned(),
         };
         return refuse(
             &mut stream,
@@ -68,10 +72,14 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
         );
     }
 
-    // The listing is the router's own answer, so it is settled before
-    // anything is read from the body or started on a child's behalf.
-    if matches!(request.endpoint, Endpoint::Listing) {
-        return list(&mut stream, shared);
+    // The router's own answers, settled before anything is read from the body
+    // or started on a child's behalf: saying what could be served is never a
+    // reason to start serving it.
+    match request.endpoint {
+        Endpoint::Listing => return own::list(&mut stream, shared),
+        Endpoint::Catalogue => return own::catalogue(&mut stream, shared),
+        Endpoint::Properties => return own::properties(&mut stream),
+        Endpoint::Dedicated { .. } | Endpoint::Generic { .. } => {}
     }
 
     // Which model answers, and the body if reading it was what said so. The
@@ -79,7 +87,9 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
     // is why only one of these two arms buffers anything.
     let (wanted, buffered) = match &request.endpoint {
         Endpoint::Dedicated { id, .. } => (id.clone(), None),
-        Endpoint::Listing => unreachable!("answered above"),
+        Endpoint::Listing | Endpoint::Catalogue | Endpoint::Properties => {
+            unreachable!("answered above")
+        }
         Endpoint::Generic { .. } => {
             // This endpoint has nothing else to route on, so a request with no
             // declared body is one it can never answer. Said as the missing
@@ -158,28 +168,6 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
     );
     shared.slots.touch(&entry.id);
     outcome
-}
-
-/// Every entry the catalog carries, in the shape a client expects.
-///
-/// Answered from the catalog and nothing else: listing what can be served is
-/// not a reason to start serving it, so no child is touched.
-fn list(stream: &mut TcpStream, shared: &Shared) -> std::io::Result<()> {
-    let data: Vec<serde_json::Value> = shared
-        .catalog
-        .entries
-        .iter()
-        .map(|entry| {
-            serde_json::json!({
-                "id": entry.id,
-                "object": "model",
-                "owned_by": "maestro-llamacpp",
-            })
-        })
-        .collect();
-    let body = serde_json::json!({ "object": "list", "data": data }).to_string();
-
-    reply(stream, 200, "OK", "application/json", &body)
 }
 
 /// The router's own answer, as a complete reply with a declared length.

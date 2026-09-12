@@ -90,6 +90,16 @@ impl Slots {
     /// Every slot is emptied first and the children dropped afterwards, so
     /// no slot's guard is held while a process is being killed and waited
     /// for -- the same rule [`take_if_idle`] keeps, for the same reason.
+    /// Which entries are loaded right now, by id.
+    ///
+    /// Ids rather than handles, deliberately: the slot invariant in
+    /// [`super::loaded`] is a rule about where an `Arc` may be cloned, and
+    /// handing out references to list what is running is exactly what it
+    /// warns against. A caller asking this wants to report, not to serve.
+    pub(super) fn loaded(&self, catalog: &Catalog) -> Vec<String> {
+        self.snapshot(catalog, |entry, _| entry.id.clone())
+    }
+
     pub(super) fn clear(&self) {
         let taken: Vec<_> = self
             .by_id

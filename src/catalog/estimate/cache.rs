@@ -35,7 +35,13 @@ pub(super) fn cache_bytes(
         .unwrap_or(key_length);
     // Layers that differ are summed one at a time. A model whose layers all
     // attend the same way is the common case and keeps the single product.
-    if let Some(pattern) = metadata.per_layer("attention.sliding_window_pattern")
+    //
+    // The assumed pattern is bound before the borrow that may replace it, so
+    // that a synthesised one outlives the slice taken from it.
+    let assumed = assumed_pattern(metadata);
+    if let Some(pattern) = metadata
+        .per_layer("attention.sliding_window_pattern")
+        .or(assumed.as_deref())
         && let Some(window) = metadata.of_model("attention.sliding_window")
     {
         let swa_keys = metadata
@@ -68,6 +74,40 @@ pub(super) fn cache_bytes(
         * (u128::from(key_length) * u128::from(keys)
             + u128::from(value_length) * u128::from(values));
     Some(u128::from(layers) * u128::from(context) * per_token / 16)
+}
+
+/// Which layers slide, for an architecture that windows without saying where.
+///
+/// Gemma 3 writes `attention.sliding_window` and stops. Which layers take that
+/// window is not in the file at all: it is fixed at one full-attention layer
+/// in every six, and llama.cpp carries that in its loader rather than reading
+/// it. A reader that waits for an array it will never see falls through to the
+/// dense path and charges every layer the whole context.
+///
+/// Measured on this estate: Gemma 3 1B derives 2664 MiB against the 2048 it
+/// declares, and the whole of that 616 MiB is twenty-two layers costed at
+/// 32,768 tokens when they only ever hold 512.
+///
+/// Marked the way a declared pattern is -- 1 where a layer slides, 0 where it
+/// attends fully -- and placed where llama.cpp places it, giving the full
+/// layer to every sixth one, the last of each run.
+///
+/// Only architectures whose interval is known belong here. A model that
+/// windows and is not on this list keeps the dense reading, which overstates
+/// its cache and so refuses rather than overcommits.
+fn assumed_pattern(metadata: &Metadata) -> Option<Vec<u64>> {
+    const KNOWN: [(&str, u64); 1] = [("gemma3", 6)];
+
+    let architecture = metadata.architecture()?;
+    let interval = KNOWN
+        .iter()
+        .find_map(|(named, interval)| (*named == architecture).then_some(*interval))?;
+    let layers = metadata.of_model("block_count")?;
+    Some(
+        (0..layers)
+            .map(|layer| u64::from(layer % interval != interval - 1))
+            .collect(),
+    )
 }
 
 /// How many of a model's layers keep a key-value cache.

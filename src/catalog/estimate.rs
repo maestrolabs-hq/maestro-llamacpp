@@ -10,14 +10,18 @@
 //!
 //! - **weights**: the size of every file the entry names -- all the shards of
 //!   a split model, the draft model, and the projector;
-//! - **cache**: for the model and again for the draft, keys and values for
-//!   every layer at the configured context:
+//! - **cache**: for the model, and for a draft that keeps one of its own,
+//!   keys and values for every layer at the configured context:
 //!   `layers x context x kv_heads x (key_length + value_length) x bytes`,
 //!   where a missing key length is the embedding width over the head count,
 //!   a missing value length is the key length, and bytes per element follows
 //!   the cache-type flags (`ctk`/`ctv`, or their long spellings): f16 and
 //!   bf16 hold 2, f32 holds 4, `q8_0` holds 1.0625, `q4_0` holds 0.5625, and
-//!   any other spelling is read as f16;
+//!   any other spelling is read as f16. A draft used for multiple-token
+//!   prediction (`spec-type` naming `mtp`) is given none: it is a head on the
+//!   model beside it and predicts from that model's cache, while carrying the
+//!   parent's layer count in its own metadata -- so sizing one charges a full
+//!   model's cache to a file a fiftieth its weight;
 //! - **fragmentation**: five percent of the weights, for the allocator's
 //!   rounding and the padding between tensors;
 //! - **overhead**: a fixed 1024 MiB for the device context and the compute
@@ -82,10 +86,24 @@ pub(super) fn derive(entry: &Entry, root: &Path) -> Result<Derived, String> {
     if let Some(draft) = &entry.draft_path {
         let draft = draft.resolve(root);
         weights += size_of(&draft).unwrap_or(0);
-        if let Ok(metadata) = Metadata::read(&draft) {
-            let keys = sixteenths(&entry.flags, ["ctkd", "cache-type-k-draft"]);
-            let values = sixteenths(&entry.flags, ["ctvd", "cache-type-v-draft"]);
-            cache += cache_bytes(&metadata, entry.context_size, keys, values).unwrap_or(0);
+        // A multiple-token-prediction draft is a head on the model beside it,
+        // not a model of its own, and it predicts from the cache that model
+        // already keeps. It is given no second cache here because the server
+        // allocates it none.
+        //
+        // This matters more than it looks. Such a sidecar carries the parent's
+        // configuration in its own metadata -- the 1.3 GiB MTP head shipped
+        // with Qwen3.8 27B declares the parent's sixty-five layers -- so
+        // sizing a cache from it charges a full-sized model's cache to a file
+        // a fiftieth its weight. Measured on this estate: the entry came out
+        // at 76,298 MiB against 28,867 MiB actually resident, and 33,280 MiB
+        // of that gap was a cache for a head that never had one.
+        if !predicts_tokens(&entry.flags) {
+            if let Ok(metadata) = Metadata::read(&draft) {
+                let keys = sixteenths(&entry.flags, ["ctkd", "cache-type-k-draft"]);
+                let values = sixteenths(&entry.flags, ["ctvd", "cache-type-v-draft"]);
+                cache += cache_bytes(&metadata, entry.context_size, keys, values).unwrap_or(0);
+            }
         }
     }
     if let Some(projector) = &entry.projector_path {
@@ -129,6 +147,19 @@ fn cache_bytes(metadata: &Metadata, context: u32, keys: u64, values: u64) -> Opt
         * (u128::from(key_length) * u128::from(keys)
             + u128::from(value_length) * u128::from(values));
     Some(u128::from(layers) * u128::from(context) * per_token / 16)
+}
+
+/// Whether the draft is a prediction head rather than a model of its own.
+///
+/// Read from `spec-type`, which is what the server itself keys on, rather than
+/// guessed from the draft's size or its layer count -- both of which a sidecar
+/// reports as its parent's. An independent draft model, which does keep its
+/// own cache, says nothing here and is sized normally.
+fn predicts_tokens(flags: &BTreeMap<String, String>) -> bool {
+    ["spec-type", "speculative-type"]
+        .iter()
+        .find_map(|name| flags.get(*name))
+        .is_some_and(|spelling| spelling.trim().to_ascii_lowercase().contains("mtp"))
 }
 
 /// The bytes per cached element the flags ask for, in sixteenths.
@@ -228,6 +259,33 @@ mod tests {
         assert_eq!(shard_of("model.gguf"), None, "no suffix");
         assert_eq!(shard_of("model-1-of-x.gguf"), None, "not digits");
         assert_eq!(shard_of("model-1-of-04.gguf"), None, "widths differ");
+    }
+
+    #[test]
+    fn a_multiple_token_prediction_draft_is_a_head_not_a_model() {
+        let mut flags = BTreeMap::new();
+        assert!(
+            !predicts_tokens(&flags),
+            "an entry that asks for nothing keeps a draft cache, because an \
+             independent draft model does have one"
+        );
+
+        flags.insert("spec-type".to_owned(), "draft-mtp".to_owned());
+        assert!(
+            predicts_tokens(&flags),
+            "the server keys on spec-type, so this does too -- a sidecar's own \
+             metadata cannot be trusted for it, since it reports the parent's \
+             layer count"
+        );
+
+        flags.insert("spec-type".to_owned(), "  DRAFT-MTP ".to_owned());
+        assert!(predicts_tokens(&flags), "read as the flags are elsewhere");
+
+        flags.insert("spec-type".to_owned(), "draft".to_owned());
+        assert!(
+            !predicts_tokens(&flags),
+            "a plain draft is a model of its own and keeps its own cache"
+        );
     }
 
     #[test]

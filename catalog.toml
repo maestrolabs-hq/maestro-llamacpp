@@ -225,7 +225,11 @@ kv-unified = "true"
 [models.qwen3-06b]
 path = "llm/qwen/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf"
 context_size = 32768
-residency = "on-demand"
+# Resident, so the steward always has something to talk to. The 0.6B rather
+# than the 4B beside it: both are pinned to the processor, and what a
+# resident reserves is charged against a budget derived from the device, so
+# the cheaper one to hold is the one to hold.
+residency = "resident"
 memory_estimate_mib = 1024
 
 [models.qwen3-06b.flags]
@@ -242,8 +246,12 @@ draft_path = "llm/qwen/qwen3.8-27b-uncensored-hauhaucs/Qwen3.8-27B-Uncensored-Ha
 projector_path = "llm/qwen/qwen3.8-27b-uncensored-hauhaucs/mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
 context_size = 131072
 # Measured 26944 MiB resident 2026-09-12 on an RTX 5090 (32,607 MiB), by
-# `model-router bench` at 107 tok/s: a twentieth over, to a quarter gibibyte.
-memory_estimate_mib = 28416
+# `model-router bench` at 107 tok/s. The margin over it is small on purpose:
+# a twentieth put this at 28416, which with the resident held was 93 MiB
+# above the budget derived from the device -- refused for room it plainly
+# had. Admission re-checks what the device reports free, which is what a
+# thin margin leans on.
+memory_estimate_mib = 27648
 reasoning_format = "deepseek"
 runtime = "fastmtp"
 

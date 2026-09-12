@@ -56,11 +56,31 @@ impl Loaded {
     #[must_use]
     pub fn of(entry: &Entry, busy: bool, last_used: Instant, measured: &Measurement) -> Self {
         let estimate = u64::from(entry.memory_estimate_mib);
+
+        // An entry pinned to the processor is charged what it puts on the
+        // device, not what it holds in system memory.
+        //
+        // Both figures are real and they are not the same resource. The
+        // ceiling these are weighed against is derived from the device when
+        // the machine has one, so charging a processor-pinned model its
+        // resident set spends device budget on memory it never touches.
+        // Measured here: a 4B model at `n-gpu-layers = 0` holds 787 MiB of the
+        // device and roughly 7.4 GiB of system memory, and held as a resident
+        // it reserved a quarter of the whole budget and refused every 27B
+        // entry in the catalog.
+        //
+        // What bounds its system memory is the device-free check beside this
+        // one and the machine itself, not this ledger.
+        let off_device = device_need_mib(entry) == 0;
+        let measured_cost = if off_device {
+            measured.device_mib
+        } else {
+            measured.largest_mib()
+        };
+
         Self {
             id: entry.id.clone(),
-            cost_mib: measured
-                .largest_mib()
-                .map_or(estimate, |mib| mib.max(estimate)),
+            cost_mib: measured_cost.map_or(estimate, |mib| mib.max(estimate)),
             device_mib: measured
                 .device_mib
                 .unwrap_or_else(|| device_need_mib(entry)),

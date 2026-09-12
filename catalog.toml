@@ -312,8 +312,8 @@ path = "llm/qwen/qwen3.8-27b-uncensored-hauhaucs/Qwen3.8-27B-Uncensored-HauhauCS
 draft_path = "llm/qwen/qwen3.8-27b-uncensored-hauhaucs/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-FastMTP-32K.gguf"
 projector_path = "llm/qwen/qwen3.8-27b-uncensored-hauhaucs/mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
 context_size = 131072
-# Measured 26944 MiB resident 2026-09-12 on an RTX 5090 (32,607 MiB), by
-# `model-router bench` at 107 tok/s. The margin over it is small on purpose:
+# Measured 26944 MiB resident 2026-09-12 on an RTX 5090 (32,607 MiB), loaded
+# and generating at 107 tok/s. The margin over it is small on purpose:
 # a twentieth put this at 28416, which with the resident held was 93 MiB
 # above the budget derived from the device -- refused for room it plainly
 # had. Admission re-checks what the device reports free, which is what a
@@ -609,19 +609,22 @@ kv-unified = "true"
 #
 # bge-m3 and not the Qwen3-Embedding-0.6B this entry first carried, nor the
 # all-MiniLM-L6-v2 that would be the reflex, because the three were measured
-# against each other on 276 chunks of this repository's own comments with ten
-# questions whose right answer was known:
+# against each other on this repository's own comments. Qwen was given its
+# documented `Instruct:` query prefix, which is worth the 1 to 5 percent its
+# card claims and did not close the gap. MiniLM was never run: it stops at 512
+# positions and these chunks are longer, which is a fact about the corpus
+# rather than a judgement about the model.
 #
-#   BM25 over the same chunks           MRR 0.362, 3 of 10 first
-#   Qwen3-Embedding-0.6B                MRR 0.315, 2 of 10 first
-#   bge-m3                              MRR 0.560, 4 of 10 first
+# Measured twice, and the second time is the one to believe. Ten hand-written
+# questions put bge-m3 at 0.560 against Qwen's 0.315 and BM25's 0.362; sixty-
+# seven questions over 279 chunks put it at 0.713 against BM25's 0.689. The
+# ordering held and the margin did not, which is what ten of anything is worth.
+# See the rerank entry below for what the same widening did to a conclusion
+# that had been the wrong way round entirely.
 #
-# Qwen was given its documented `Instruct:` query prefix, which is worth the 1
-# to 5 percent its card claims and does not close that. MiniLM was not run: it
-# stops at 512 positions, and the chunks here are longer than that.
+# Published by ggml-org, which is llama.cpp's own account, so the file is known
+# to load rather than hoped to.
 #
-# Published by ggml-org, which is llama.cpp's own account, so the file is
-# known to load rather than hoped to.
 [models.embed]
 path = "llm/baai/bge-m3/bge-m3-q8_0.gguf"
 # 8194 is this model's whole trained window, against Qwen3-Embedding's 32768.
@@ -647,6 +650,46 @@ embeddings = "true"
 # which is why the entry was checked against known-related text rather than
 # only for a 200.
 pooling = "cls"
+fa = "on"
+np = "1"
+kv-unified = "true"
+
+# The reranker, which is the third stage of retrieval and the one that pays.
+# An embedder turns a passage into a vector once and compares vectors; this
+# reads the query and the passage together and scores the pair, which is why
+# it is slower per document and better at saying which of them answers.
+#
+# Declared on a measurement that reversed itself, and the reversal is the
+# point. Ten questions said reranking made retrieval worse -- 0.560 down to
+# 0.539 at depth ten -- so the model was downloaded and left out of this file.
+# Sixty-seven questions over the same 279 chunks said the opposite:
+#
+#   bge-m3 alone                        MRR 0.713, 40 of 67 first
+#   BM25 and bge-m3 fused               MRR 0.764, 44 of 67 first
+#   bge-m3 then reranked, top 10        MRR 0.845, 53 of 67 first
+#   bge-m3 then reranked, top 20        MRR 0.858, 54 of 67 first
+#
+# At depth twenty it moved twenty queries up and four down. The first reading
+# was not a smaller version of the second, it was the wrong sign, and ten
+# questions is how that happens.
+#
+# Twelve milliseconds a pair on this card, so reranking twenty candidates costs
+# about a quarter of a second -- affordable after a retrieval, and not
+# something to run over a whole corpus.
+[models.rerank]
+path = "llm/baai/bge-reranker-v2-m3/bge-reranker-v2-m3-Q8_0.gguf"
+context_size = 8192
+# Measured 890 MiB resident 2026-09-12 on an RTX 5090, scoring pairs: a
+# twentieth over, to a quarter gibibyte. Within ten MiB of the embedder beside
+# it, which is what two 600 MB files that keep no cache should cost.
+memory_estimate_mib = 1024
+
+[models.rerank.flags]
+# `reranking` turns on the /v1/rerank endpoint and, like `embeddings` on the
+# entry above, is exclusive: this child scores pairs and will not hold a chat.
+# Both flags exempt an entry from the cache term in the estimate, because
+# neither way of running a model keeps one.
+reranking = "true"
 fa = "on"
 np = "1"
 kv-unified = "true"

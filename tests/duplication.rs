@@ -211,6 +211,18 @@ const ACCEPTED: &[(&str, &str)] = &[
          answer as a parameter, and the two answers have nothing in common \
          but the variants they are keyed on.",
     ),
+    (
+        "an_embedding_entry_is_not_charged_a_cache_it_never_keeps \
+         <-> a_reranking_entry_is_not_charged_a_cache_either",
+        "Two flags the server keys on separately, asserted the same way \
+         because the assertion is the contract: however a way of running a \
+         model treats its cache, the estimate has to follow. What differs is \
+         which flag, and that is the whole of each test's name. Merging them \
+         takes the flag as a parameter and leaves one test naming neither \
+         mode -- and they are not one claim, because a server can gain \
+         reranking without embeddings or the reverse, and the estimate would \
+         then be wrong for exactly one of them with nothing to say so.",
+    ),
 ];
 
 /// `path:lines function name <-> path:lines function name` -> `name <-> name`.

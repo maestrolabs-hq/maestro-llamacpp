@@ -482,6 +482,41 @@ fn an_embedding_entry_is_not_charged_a_cache_it_never_keeps() {
 }
 
 #[test]
+fn a_reranking_entry_is_not_charged_a_cache_either() {
+    // A reranker scores one query against one passage and forgets both. It
+    // keeps no more between calls than an embedding server does, and for the
+    // same reason -- so the flag that turns it on has to exempt it from the
+    // cache term too, or the two sit in one catalog costed on different rules.
+    let scratch = Scratch::new("catalog-reranking");
+    layered(None).write(&scratch.path().join("a/model.gguf"), 64 * MIB);
+
+    let generative = Catalog::read(&one_entry(""), scratch.path())
+        .expect("derivable")
+        .catalog
+        .entry("alpha")
+        .expect("alpha")
+        .memory_estimate_mib;
+    let reranking = Catalog::read(
+        &format!(
+            "{}\n[models.alpha.flags]\nreranking = \"true\"\n",
+            one_entry("")
+        ),
+        scratch.path(),
+    )
+    .expect("derivable")
+    .catalog
+    .entry("alpha")
+    .expect("alpha")
+    .memory_estimate_mib;
+
+    assert!(
+        generative - reranking >= 24,
+        "a reranking entry must be costed like an embedding one: generative \
+         {generative} MiB, reranking {reranking} MiB"
+    );
+}
+
+#[test]
 fn an_absent_estimate_is_derived_from_the_files() {
     let scratch = Scratch::new("catalog-derive");
     small_model().write(&scratch.path().join("a/model.gguf"), 64 * MIB);

@@ -122,7 +122,7 @@ pub(super) fn derive(entry: &Entry, root: &Path) -> Result<Derived, String> {
         // though nothing had been read.
         Some(model_cache) => (
             weights
-                + if embeds_only(&entry.flags) {
+                + if keeps_no_cache(&entry.flags) {
                     0
                 } else {
                     model_cache
@@ -141,15 +141,16 @@ pub(super) fn derive(entry: &Entry, root: &Path) -> Result<Derived, String> {
     Ok(Derived { mib, basis })
 }
 
-/// Whether the entry is served for embeddings rather than for generation.
+/// Whether the entry is served in a way that keeps no key-value cache.
 ///
 /// A server started with `embeddings` answers one forward pass at a time and
-/// keeps nothing between them. There is no conversation to remember, so the
-/// key-value cache a generative entry holds for the length of a session is
-/// never allocated -- and the context size, which for those entries is the
-/// largest term in the sum, here only bounds how long one passage may be.
+/// keeps nothing between them; one started with `reranking` scores a query
+/// against a passage and forgets both. Neither has a conversation to remember,
+/// so the cache a generative entry holds for the length of a session is never
+/// allocated -- and the context size, which for those entries is the largest
+/// term in the sum, here only bounds how long one passage may be.
 ///
-/// Read from the flag the server itself keys on, as `predicts_tokens` beside
+/// Read from the flags the server itself keys on, as `predicts_tokens` beside
 /// it reads `spec-type`. Both answer the same shape of question: the file says
 /// what a model *could* cost, and the flags say what this way of running it
 /// actually will.
@@ -157,8 +158,8 @@ pub(super) fn derive(entry: &Entry, root: &Path) -> Result<Derived, String> {
 /// Measured on this estate: bge-m3 at a context of 8192 derived 2428 MiB
 /// against the 880 MiB it was found to hold, and the whole of that gap was a
 /// cache the child never asked the device for.
-fn embeds_only(flags: &BTreeMap<String, String>) -> bool {
-    ["embeddings", "embedding"]
+fn keeps_no_cache(flags: &BTreeMap<String, String>) -> bool {
+    ["embeddings", "embedding", "reranking", "rerank"]
         .iter()
         .find_map(|name| flags.get(*name))
         .is_some_and(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "false" | "0"))

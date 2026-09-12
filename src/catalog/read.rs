@@ -5,7 +5,7 @@
 //! collected onto one list rather than returned at the first, so a reader
 //! fixes a whole file in one pass.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use toml::{Table, Value};
 
@@ -13,7 +13,7 @@ use super::field::{
     as_location, as_positive, as_residency, as_text, flags, optional, problem, report_unknown,
     required, table_at,
 };
-use super::{Entry, Residency};
+use super::{Entry, Report, Residency};
 
 /// Fields an entry may carry.
 const ENTRY_FIELDS: &[&str] = &[
@@ -46,7 +46,7 @@ const DEFAULT_FIELDS: &[&str] = &[
 /// Generous rather than tight, on purpose: a budget that expires on a healthy
 /// model teaches people to raise it without reading it, and then it protects
 /// nothing.
-const DEFAULT_STARTUP_TIMEOUT_SECONDS: u32 = 300;
+pub(super) const DEFAULT_STARTUP_TIMEOUT_SECONDS: u32 = 300;
 
 /// How the defaults table is named in its own problems.
 const DEFAULTS: &str = "catalog defaults";
@@ -54,20 +54,58 @@ const DEFAULTS: &str = "catalog defaults";
 /// Settings an entry inherits when it does not set them.
 #[derive(Debug, Default)]
 pub(super) struct Defaults {
-    context_size: Option<u32>,
-    residency: Option<Residency>,
-    memory_estimate_mib: Option<u32>,
-    reasoning_format: Option<String>,
-    reasoning_effort: Option<String>,
-    startup_timeout_seconds: Option<u32>,
-    flags: BTreeMap<String, String>,
+    pub context_size: Option<u32>,
+    pub residency: Option<Residency>,
+    pub memory_estimate_mib: Option<u32>,
+    pub reasoning_format: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub startup_timeout_seconds: Option<u32>,
+    pub flags: BTreeMap<String, String>,
 }
 
-pub(super) fn version(table: &Table, problems: &mut Vec<String>) -> Option<u32> {
+/// Everything one walk of the text produced.
+///
+/// The estimate is the one field the text may leave out, because it can be
+/// derived from the files -- which needs a models root the text does not
+/// have. An entry that leaves it out is named in `undeclared` and carries a
+/// zero until a caller settles it, and no entry leaves this module's callers
+/// with that zero still in it: `parse` refuses the entry, and `read` derives
+/// the figure. Named by identifier even when the entry failed for other
+/// reasons, so a reader fixing one entry sees every fault it has at once.
+#[derive(Debug, Default)]
+pub(super) struct Drafts {
+    pub version: Option<u32>,
+    pub defaults: Defaults,
+    pub entries: Vec<Entry>,
+    pub undeclared: BTreeSet<String>,
+    pub problems: Vec<String>,
+}
+
+/// Walks the text once, collecting every problem rather than the first.
+///
+/// # Errors
+///
+/// Text that is not TOML stops the walk and is the one problem returned,
+/// because nothing further can be read. Every other problem is on the
+/// [`Drafts`] for the caller to judge alongside its own.
+pub(super) fn drafts(text: &str) -> Result<Drafts, Report> {
+    let table = text
+        .parse::<Table>()
+        .map_err(|e| Report::single(format!("the catalog is not valid TOML: {e}")))?;
+    let mut drafts = Drafts::default();
+    drafts.version = version(&table, &mut drafts.problems);
+    drafts.defaults = defaults(&table, &mut drafts.problems);
+    let defaults = std::mem::take(&mut drafts.defaults);
+    drafts.entries = entries(&table, &defaults, &mut drafts);
+    drafts.defaults = defaults;
+    Ok(drafts)
+}
+
+fn version(table: &Table, problems: &mut Vec<String>) -> Option<u32> {
     required(table, "catalog", "version", problems, as_positive)
 }
 
-pub(super) fn defaults(table: &Table, problems: &mut Vec<String>) -> Defaults {
+fn defaults(table: &Table, problems: &mut Vec<String>) -> Defaults {
     let Some(inner) = table_at(table, "catalog", "defaults", problems) else {
         return Defaults::default();
     };
@@ -96,32 +134,25 @@ pub(super) fn defaults(table: &Table, problems: &mut Vec<String>) -> Defaults {
     }
 }
 
-pub(super) fn entries(
-    table: &Table,
-    defaults: &Defaults,
-    problems: &mut Vec<String>,
-) -> Vec<Entry> {
+fn entries(table: &Table, defaults: &Defaults, out: &mut Drafts) -> Vec<Entry> {
     if table.get("models").is_none() {
-        problems.push(problem("catalog", "models", "is required"));
+        out.problems
+            .push(problem("catalog", "models", "is required"));
         return Vec::new();
     }
-    let Some(models) = table_at(table, "catalog", "models", problems) else {
+    let Some(models) = table_at(table, "catalog", "models", &mut out.problems) else {
         return Vec::new();
     };
 
     // `toml::Table` iterates in sorted order, so entries come out stable.
     models
         .iter()
-        .filter_map(|(id, value)| entry(id, value, defaults, problems))
+        .filter_map(|(id, value)| entry(id, value, defaults, out))
         .collect()
 }
 
-fn entry(
-    id: &str,
-    value: &Value,
-    defaults: &Defaults,
-    problems: &mut Vec<String>,
-) -> Option<Entry> {
+fn entry(id: &str, value: &Value, defaults: &Defaults, out: &mut Drafts) -> Option<Entry> {
+    let problems = &mut out.problems;
     let scope = format!("entry '{id}'");
     let Some(table) = value.as_table() else {
         problems.push(format!("{scope}: must be a table"));
@@ -146,14 +177,10 @@ fn entry(
         "context_size",
         problems,
     );
-    let memory_estimate_mib = settled(
-        table,
-        optional(table, &scope, "memory_estimate_mib", problems, as_positive)
-            .or(defaults.memory_estimate_mib),
-        &scope,
-        "memory_estimate_mib",
-        problems,
-    );
+    // Not settled here: absence is a problem for `parse` and a derivation
+    // for `read`, and only the caller knows which it is.
+    let memory_estimate_mib = optional(table, &scope, "memory_estimate_mib", problems, as_positive)
+        .or(defaults.memory_estimate_mib);
     let residency = optional(table, &scope, "residency", problems, as_residency)
         .or(defaults.residency)
         .unwrap_or(Residency::OnDemand);
@@ -171,6 +198,12 @@ fn entry(
     .or(defaults.startup_timeout_seconds)
     .unwrap_or(DEFAULT_STARTUP_TIMEOUT_SECONDS);
 
+    // Recorded before the entry can fail on another field, so an entry that
+    // is wrong three ways is reported all three at once.
+    if memory_estimate_mib.is_none() {
+        out.undeclared.insert(id.to_owned());
+    }
+
     Some(Entry {
         id: id.to_owned(),
         path: path?,
@@ -178,7 +211,7 @@ fn entry(
         projector_path,
         context_size: context_size?,
         residency,
-        memory_estimate_mib: memory_estimate_mib?,
+        memory_estimate_mib: memory_estimate_mib.unwrap_or_default(),
         reasoning_format,
         reasoning_effort,
         startup_timeout_seconds,

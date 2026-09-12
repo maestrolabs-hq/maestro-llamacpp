@@ -143,6 +143,14 @@ const ACCEPTED: &[(&str, &str)] = &[
          holds.",
     ),
     (
+        "u32_at <-> u64_at",
+        "Two one-line readers over bytes_at, differing only in the integer \
+         type the bytes spell. The shared shape is the whole function. \
+         Merging them would need a trait over from_le_bytes that the \
+         standard library does not offer, and inlining them would spell the \
+         width at every call site where the name says it once.",
+    ),
+    (
         "the_budget_line_says_whether_anything_is_ever_unloaded \
          <-> the_idle_window_line_says_whether_anything_is_ever_unloaded_for_sitting_idle",
         "Two startup lines, each asserting the same two-branch shape: the \

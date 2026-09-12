@@ -10,6 +10,8 @@
 //! `streaming.rs`. A failure here means routing; a failure there means the
 //! relay.
 
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -280,6 +282,77 @@ fn a_body_is_forwarded_to_the_child_with_its_headers() {
         reply.contains("Content-Type: application/json"),
         "as does every header the router has no opinion about:\n{reply}"
     );
+}
+
+/// Reads until the first blank line, which is where an interim response ends.
+fn read_head(stream: &mut TcpStream) -> String {
+    let mut seen = Vec::new();
+    let mut byte = [0u8; 1];
+    while !seen.ends_with(b"\r\n\r\n") {
+        match stream.read(&mut byte) {
+            Ok(1) => seen.push(byte[0]),
+            _ => break,
+        }
+    }
+    String::from_utf8_lossy(&seen).into_owned()
+}
+
+#[test]
+fn a_client_that_asks_before_sending_its_body_is_told_to_send_it() {
+    let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
+
+    // Both endpoints, because they read the body at different moments: the
+    // generic one before it knows which model answers, the dedicated one
+    // only once a child is ready to be handed it.
+    for path in ["/v1/echo", "/models/gemma3/v1/echo"] {
+        let body = "{\"model\":\"gemma3\"}";
+        let mut stream = TcpStream::connect(serving.address()).expect("the router is listening");
+        // The deadline is the assertion: a client honouring `Expect` sends
+        // nothing until it is told to, so a router that never tells it is a
+        // request that never completes.
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("a read timeout");
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\n\
+             Host: router\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\
+             Expect: 100-continue\r\n\
+             Connection: close\r\n\
+             \r\n",
+            body.len()
+        )
+        .expect("write");
+
+        let interim = read_head(&mut stream);
+        assert!(
+            interim.starts_with("HTTP/1.1 100 Continue\r\n"),
+            "the router tells the client to send the body it is holding back \
+             ({path}); curl waits a second for this and then sends anyway, and \
+             a stricter client waits forever:\n{interim:?}"
+        );
+
+        stream.write_all(body.as_bytes()).expect("write the body");
+        let mut reply = String::new();
+        drop(stream.read_to_string(&mut reply));
+
+        assert_eq!(
+            status(&reply),
+            Some(200),
+            "the child answered ({path}):\n{reply}"
+        );
+        assert!(
+            reply.contains(&format!("body: {body}")),
+            "and received the body that was sent on request ({path}):\n{reply}"
+        );
+        assert!(
+            !reply.to_lowercase().contains("expect:"),
+            "the expectation was the router's to meet, so the child is not \
+             asked to meet it again ({path}):\n{reply}"
+        );
+    }
 }
 
 #[test]

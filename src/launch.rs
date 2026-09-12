@@ -67,11 +67,24 @@ pub enum Failure {
     /// that waits for something else to finish may get a different answer.
     /// That difference is what the status codes carry.
     Refused(String),
+    /// A child was not started, because the room it needed was taken by a
+    /// request that reached it first.
+    ///
+    /// Distinct from [`Failure::Refused`] because the difference is what a
+    /// caller should do next. A refusal names what holds the memory and may
+    /// never change; this one changes the moment the other request is done,
+    /// so it is the one answer a caller improves by retrying -- and the proxy
+    /// says so with a `Retry-After`, which it could not do if the two shared
+    /// a variant and differed only in prose.
+    Contended(String),
 }
 
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (Self::NotReady(message) | Self::Unavailable(message) | Self::Refused(message)) = self;
+        let (Self::NotReady(message)
+        | Self::Unavailable(message)
+        | Self::Refused(message)
+        | Self::Contended(message)) = self;
         write!(f, "{message}")
     }
 }

@@ -28,7 +28,8 @@ use std::io::Read;
 
 use serde_json::Value;
 
-use crate::launch::Failure;
+use super::head::timed_out;
+use super::refusal::{Cause, Refusal};
 
 /// The most a request body may declare before it is refused.
 ///
@@ -53,29 +54,42 @@ pub(super) const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 ///
 /// # Errors
 ///
-/// Returns a [`Failure`] when the body ends early, when it is not JSON, or
-/// when it names no model.
+/// Returns a [`Refusal`] when the body ends early or stops arriving, when it
+/// is not JSON, or when it names no model.
 pub(super) fn read(
     reader: &mut impl Read,
     content_length: usize,
-) -> Result<(Vec<u8>, String), Failure> {
+) -> Result<(Vec<u8>, String), Refusal> {
     let mut bytes = vec![0u8; content_length];
     reader.read_exact(&mut bytes).map_err(|error| {
-        refused(&format!(
-            "a request body declaring {content_length} bytes ended early: {error}"
-        ))
+        // A caller that stopped sending and one that hung up are told
+        // apart, because only one of them is still there to be told.
+        let cause = if timed_out(&error) {
+            Cause::RequestTimeout
+        } else {
+            Cause::BodyIncomplete
+        };
+        Refusal::new(
+            cause,
+            format!("a request body declaring {content_length} bytes ended early: {error}"),
+        )
     })?;
 
     // Parsed as a whole value rather than scanned, because the top-level key
     // is only findable by something that tracks strings, escapes and depth.
-    let parsed: Value = serde_json::from_slice(&bytes)
-        .map_err(|error| refused(&format!("a request body that is not JSON: {error}")))?;
+    let parsed: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        Refusal::new(
+            Cause::BodyNotJson,
+            format!("a request body that is not JSON: {error}"),
+        )
+    })?;
 
     let model = parsed
         .get("model")
         .and_then(Value::as_str)
         .ok_or_else(|| {
-            refused(
+            Refusal::new(
+                Cause::ModelMissing,
                 "the generic endpoint routes on the 'model' field of the \
                  request body, and this request carries none; name a model \
                  there, or address a model directly at /models/<model>/<path>",
@@ -86,18 +100,13 @@ pub(super) fn read(
     Ok((bytes, model))
 }
 
-/// A body this router will not route on, and why.
-fn refused(reason: &str) -> Failure {
-    Failure::Unavailable(reason.to_owned())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Cursor;
 
     /// Reads a whole body, the way a caller with a complete request does.
-    fn model_of(body: &str) -> Result<String, Failure> {
+    fn model_of(body: &str) -> Result<String, Refusal> {
         let mut source = Cursor::new(body.as_bytes().to_vec());
         read(&mut source, body.len()).map(|(_, model)| model)
     }

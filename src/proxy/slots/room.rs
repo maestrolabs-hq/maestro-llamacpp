@@ -39,8 +39,10 @@ impl Slots {
     ///
     /// # Errors
     ///
-    /// Returns a [`Failure::Refused`] when the entry cannot fit at all, or
-    /// when the wait expired with its room still held.
+    /// Returns a [`Failure::Refused`] when the entry cannot fit at all, and a
+    /// [`Failure::Contended`] when the wait expired with its room still held.
+    /// The difference is what a caller should do next, and the proxy carries
+    /// it as a `Retry-After` on the one a retry can fix.
     pub(super) fn make_room(&self, catalog: &Catalog, entry: &Entry) -> Result<(), Failure> {
         let deadline = Instant::now() + self.wait.duration();
 
@@ -105,14 +107,22 @@ impl Slots {
 /// without a subject tells an operator nothing about whether trying again is
 /// worth it. Names the wait too: a caller held for a minute should not be left
 /// wondering whether it waited at all.
+///
+/// Contended rather than refused, and the distinction is the whole of what a
+/// caller does next. Every path that reaches here was held by something that
+/// will finish -- a reader that got there first, or an on-demand entry still
+/// busy -- so the answer changes on its own and a retry is the right response.
+/// A [`Failure::Refused`] is the other kind: larger than the budget, or held
+/// by residents that never become candidates, where waiting changes nothing.
+/// The proxy reads that difference and sends `Retry-After` on this one alone.
 fn refused(entry: &Entry, held: &str, waited: Duration) -> Failure {
     if waited.is_zero() {
-        return Failure::Refused(format!(
+        return Failure::Contended(format!(
             "{held}; this may succeed on a retry, or set \
              MAESTRO_ADMISSION_WAIT_SECONDS to wait for the room"
         ));
     }
-    Failure::Refused(format!(
+    Failure::Contended(format!(
         "{held}; '{}' waited {}s and the room did not free up",
         entry.id,
         waited.as_secs()

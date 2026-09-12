@@ -192,20 +192,24 @@ const ACCEPTED: &[(&str, &str)] = &[
          having one parameter and passing the rest on.",
     ),
     (
-        "list <-> catalogue",
-        "The two shapes of the model listing, already sharing everything they \
-         can: the envelope is `listing`, and what remains in each is only the \
-         per-entry shape its own client reads. That is precisely where they \
-         differ -- one carries names, the other status, source and context -- \
-         and a single function taking every field would hide the difference \
-         rather than express it.",
+        "listing <-> json",
+        "`listing` is `json` with the catalog read into a value first, and it \
+         calls it -- so what the gate has matched is delegation seen from the \
+         outside, both ending in the same sentence: build a value, hand it to \
+         the framing. Collapsing them leaves the one caller that already \
+         holds a value passing it to a function with nothing left to do. The \
+         pair replaced `list <-> catalogue` and `list <-> properties`, which \
+         went stale when the second writer in `answer::own` was dropped for \
+         this one.",
     ),
     (
-        "list <-> properties",
-        "Both are now one expression: build a small JSON value and reply with \
-         it. The shape they share is that sentence, which is what answering \
-         from the catalog *is*. There is nothing left to factor without \
-         inventing a parameter for the value itself.",
+        "allowed <-> suffix",
+        "Two questions asked of the same three endpoint shapes, each answered \
+         per shape with a match: which methods an endpoint accepts, and what \
+         the child is asked for. The shared structure is the enum they both \
+         read. Merging them would be one method taking which question to \
+         answer as a parameter, and the two answers have nothing in common \
+         but the variants they are keyed on.",
     ),
 ];
 

@@ -1,29 +1,24 @@
 //! The request head: what the router reads of a request, and what it sends on.
 //!
-//! Pure translation. Bytes in, a parsed head out, and a rewritten head back to
+//! Pure translation. Lines in, a parsed head out, and a rewritten head back to
 //! bytes -- no sockets, no processes, no clock. That is what lets every rule
-//! below be asserted directly rather than inferred from a running relay.
+//! below be asserted directly rather than inferred from a running relay. The
+//! one step that does touch a socket, reading the lines within bounds, is
+//! `read` beside this and is re-exported from here so a caller asks one
+//! module for a head.
 //!
 //! This is the only part of a request the router understands. Everything after
 //! the blank line is copied without being read, which is the decision the
 //! whole slice rests on: what the router does not parse, it cannot buffer.
 
 use std::fmt::Write as _;
-use std::io::{BufRead, Read as _};
 use std::net::SocketAddr;
 
 use super::endpoint::Endpoint;
-use crate::launch::Failure;
+use super::refusal::{Cause, Refusal};
 
-/// How many bytes of head the router will read before refusing.
-///
-/// A router that read an unbounded head from a socket is a router with a
-/// memory bug waiting for a bad client. The limit is generous for a request
-/// line and a dozen headers, and far below anything worth allocating for.
-pub(super) const MAX_HEAD_BYTES: usize = 64 * 1024;
-
-/// How many header lines the router will accept.
-pub(super) const MAX_HEADERS: usize = 100;
+mod read;
+pub(super) use read::{read, timed_out};
 
 /// What a request said about the length of its body.
 ///
@@ -61,60 +56,23 @@ pub(super) struct Head {
     /// Whether the request announced chunked framing, which this router
     /// refuses rather than guesses at.
     pub(super) chunked: bool,
-}
-
-/// Reads the request line and headers, ending at the first blank line.
-///
-/// # Errors
-///
-/// Returns a [`Failure`] when the head exceeds either bound, or when the
-/// connection ends before a blank line arrives.
-pub(super) fn read(reader: &mut impl BufRead) -> Result<Vec<String>, Failure> {
-    let mut lines: Vec<String> = Vec::new();
-    let mut read = 0usize;
-    loop {
-        let remaining = MAX_HEAD_BYTES.saturating_sub(read);
-        if remaining == 0 {
-            return Err(oversized(&format!("longer than {MAX_HEAD_BYTES} bytes")));
-        }
-
-        // Bounded at the read rather than after it. Checking the length of a
-        // line already in memory would be a limit that allocates whatever it
-        // was given before deciding it was too much.
-        let mut line = String::new();
-        let taken = u64::try_from(remaining).unwrap_or(u64::MAX);
-        let count = (&mut *reader)
-            .take(taken)
-            .read_line(&mut line)
-            .map_err(|error| oversized(&format!("unreadable: {error}")))?;
-        if count == 0 {
-            return Err(oversized("ended before its blank line"));
-        }
-        read += count;
-
-        let trimmed = line.trim_end_matches(['\r', '\n']).to_owned();
-        if trimmed.is_empty() {
-            return Ok(lines);
-        }
-        if lines.len() >= MAX_HEADERS {
-            return Err(oversized(&format!("more than {MAX_HEADERS} lines")));
-        }
-        lines.push(trimmed);
-    }
-}
-
-/// A head the router will not read, and why.
-fn oversized(reason: &str) -> Failure {
-    Failure::Unavailable(format!("the request head is {reason}"))
+    /// Whether the caller is holding its body back until it is told to send
+    /// it, as `Expect: 100-continue` says.
+    ///
+    /// The router's expectation to meet rather than the child's: the body is
+    /// read here, on the generic endpoint before any child is involved, so
+    /// the interim answer has to come from here and the header does not
+    /// travel on.
+    pub(super) expects_continue: bool,
 }
 
 /// Turns the lines of a head into the parts the router routes on.
 ///
 /// # Errors
 ///
-/// Returns a [`Failure`] when there is no request line, or when the path is
+/// Returns a [`Refusal`] when there is no request line, or when the path is
 /// not a shape this router serves.
-pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
+pub(super) fn parse(lines: &[String]) -> Result<Head, Refusal> {
     let mut words = lines
         .first()
         .ok_or_else(|| malformed("a request with no request line"))?
@@ -132,6 +90,7 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
     let mut headers = Vec::new();
     let mut length = Length::Absent;
     let mut chunked = false;
+    let mut expects_continue = false;
     for line in lines.iter().skip(1) {
         // A line with no colon is not a header. Skipped rather than refused:
         // the router is a relay, and inventing a rule the child does not have
@@ -153,6 +112,9 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
         {
             chunked = true;
         }
+        if name.eq_ignore_ascii_case("expect") && value.eq_ignore_ascii_case("100-continue") {
+            expects_continue = true;
+        }
         headers.push((name.to_owned(), value.to_owned()));
     }
 
@@ -162,12 +124,13 @@ pub(super) fn parse(lines: &[String]) -> Result<Head, Failure> {
         headers,
         length,
         chunked,
+        expects_continue,
     })
 }
 
-/// A request this router does not serve.
-fn malformed(reason: &str) -> Failure {
-    Failure::Unavailable(reason.to_owned())
+/// A request this router cannot read as one.
+fn malformed(reason: &str) -> Refusal {
+    Refusal::new(Cause::MalformedRequest, reason)
 }
 
 impl Head {
@@ -202,8 +165,12 @@ impl Head {
             // The caller's Host named the router, and its Connection was about
             // the router's connection. Both have been answered above with the
             // child's, so passing the originals through would send the child
-            // two of each.
-            if name.eq_ignore_ascii_case("host") || name.eq_ignore_ascii_case("connection") {
+            // two of each. Its Expect was met by the router before the body
+            // was read, so the child is not asked to meet it again.
+            if name.eq_ignore_ascii_case("host")
+                || name.eq_ignore_ascii_case("connection")
+                || name.eq_ignore_ascii_case("expect")
+            {
                 continue;
             }
             write!(text, "{name}: {value}\r\n").expect(infallible);
@@ -217,7 +184,6 @@ impl Head {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
 
     fn lines(head: &[&str]) -> Vec<String> {
         head.iter().map(|line| (*line).to_owned()).collect()
@@ -328,6 +294,30 @@ mod tests {
     }
 
     #[test]
+    fn an_expectation_is_read_here_and_does_not_travel_on() {
+        let head = parse(&lines(&[
+            "POST /models/gemma3/v1/chat/completions HTTP/1.1",
+            "Expect: 100-Continue",
+        ]))
+        .expect("a well-formed head");
+
+        assert!(
+            head.expects_continue,
+            "the caller is holding its body back, whatever the case of the value"
+        );
+        assert!(
+            !head.rewrite(upstream()).to_lowercase().contains("expect"),
+            "the router meets the expectation itself, so the child is not \
+             asked to meet it again:\n{}",
+            head.rewrite(upstream())
+        );
+        assert!(
+            !head_of("/models/gemma3/v1/echo").expects_continue,
+            "and absent when nothing was asked"
+        );
+    }
+
+    #[test]
     fn the_rewritten_head_keeps_the_method_and_carries_the_suffix() {
         let rewritten = head_of("/models/gemma3/v1/chat/completions").rewrite(upstream());
 
@@ -400,54 +390,5 @@ mod tests {
             "the upstream connection closes, whatever the caller asked of the \
              router:\n{rewritten}"
         );
-    }
-
-    #[test]
-    fn a_head_within_the_bounds_is_read_up_to_the_blank_line() {
-        let mut source = Cursor::new(
-            b"POST /models/gemma3/v1/chat/completions HTTP/1.1\r\n\
-              Host: localhost\r\n\
-              \r\n\
-              {\"model\":\"gemma3\"}"
-                .to_vec(),
-        );
-
-        let head = read(&mut source).expect("a head that ends");
-
-        assert_eq!(head.len(), 2, "the request line and one header: {head:?}");
-        assert!(
-            head[0].starts_with("POST /models/gemma3/"),
-            "and nothing of the body: {head:?}"
-        );
-    }
-
-    #[test]
-    fn a_head_larger_than_the_bound_is_refused_rather_than_allocated_for() {
-        let padding = "x".repeat(MAX_HEAD_BYTES);
-        let mut source = Cursor::new(
-            format!("GET /models/gemma3/v1/models HTTP/1.1\r\nX-Big: {padding}\r\n\r\n")
-                .into_bytes(),
-        );
-
-        read(&mut source).expect_err("a bad client cannot make the router allocate");
-    }
-
-    #[test]
-    fn more_headers_than_the_bound_are_refused() {
-        let mut text = String::from("GET /models/gemma3/v1/models HTTP/1.1\r\n");
-        for index in 0..=MAX_HEADERS {
-            writeln!(text, "X-Count-{index}: \r").expect("writing to a String");
-        }
-        text.push_str("\r\n");
-
-        read(&mut Cursor::new(text.into_bytes()))
-            .expect_err("a head is a small thing, and one that is not is refused");
-    }
-
-    #[test]
-    fn a_connection_that_ends_before_the_blank_line_is_refused() {
-        let mut source = Cursor::new(b"GET /models/gemma3/v1/models HTTP/1.1\r\n".to_vec());
-
-        read(&mut source).expect_err("a truncated head is not a head");
     }
 }

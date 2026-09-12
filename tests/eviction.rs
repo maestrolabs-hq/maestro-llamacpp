@@ -16,8 +16,10 @@ use std::net::TcpStream;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use maestro_llamacpp::memory::{DeviceMemory, Fixed, Measurement, Probe};
+
 mod support;
-use support::{MODEL, ModelsRoot, budgeted, get, health, post, request, serving, status};
+use support::{MODEL, ModelsRoot, budgeted, get, health, post, probed, request, serving, status};
 
 /// A second model file, so there is something to evict in favour of.
 const SECOND_MODEL: &str = "cache/qwen/qwen3-8b.gguf";
@@ -131,6 +133,90 @@ fn an_entry_that_does_not_fit_unloads_the_one_holding_the_room() {
     );
 
     assert_stops_answering(&evicted);
+}
+
+/// A machine whose device has exactly this much free, and on which every
+/// child measures as nothing in particular.
+fn device_with_free(free_mib: u64) -> Probe {
+    Probe::Fixed(Fixed {
+        device: Some(DeviceMemory {
+            total_mib: 4096,
+            used_mib: 4096 - free_mib,
+        }),
+        system_total_mib: None,
+        measurement: Measurement::UNKNOWN,
+    })
+}
+
+#[test]
+fn a_device_without_the_room_refuses_a_start_the_budget_would_have_allowed() {
+    // 512 against a budget of 4096 fits on paper. The device reports 300 MiB
+    // free -- something else on the machine has the rest -- and nothing is
+    // loaded that could be unloaded to change that.
+    let serving = probed(
+        &two_entries(512, 512),
+        ModelsRoot::with(&[MODEL]),
+        Some(4096),
+        device_with_free(300),
+    );
+
+    let reply = request(serving.address(), &get("/models/gemma3/v1/echo"));
+    assert_eq!(
+        status(&reply),
+        Some(503),
+        "the ledger had room and the device did not, and the device wins: a \
+         model started into room that is not there is the failure this exists \
+         to prevent:\n{reply}"
+    );
+    assert!(
+        reply.contains("512") && reply.contains("300"),
+        "the refusal says what was needed and what the device had:\n{reply}"
+    );
+    assert!(
+        serving.loaded().is_empty(),
+        "nothing was started: {:?}",
+        serving.loaded()
+    );
+}
+
+#[test]
+fn a_model_measured_above_its_estimate_is_counted_at_what_it_holds() {
+    // 512 and 512 against 4096 fit together on paper. Every child on this
+    // machine measures at 4000 MiB once loaded, so the first one really
+    // holds nearly the whole budget, and the second cannot load until it
+    // goes: 4000 and 512 against 4096 is over.
+    let serving = probed(
+        &two_entries(512, 512),
+        ModelsRoot::with(&[MODEL, SECOND_MODEL]),
+        Some(4096),
+        Probe::Fixed(Fixed {
+            device: None,
+            system_total_mib: None,
+            measurement: Measurement {
+                resident_mib: Some(4000),
+                device_mib: None,
+            },
+        }),
+    );
+
+    let first = request(serving.address(), &get("/models/gemma3/v1/echo"));
+    assert_eq!(status(&first), Some(200), "the first answers:\n{first}");
+    let under_estimated = child_endpoint(&first);
+
+    let second = request(serving.address(), &get("/models/qwen38/v1/echo"));
+    assert_eq!(
+        status(&second),
+        Some(200),
+        "the second answers, having made its own room:\n{second}"
+    );
+
+    assert_stops_answering(&under_estimated);
+    assert_eq!(
+        serving.loaded(),
+        vec!["qwen38".to_owned()],
+        "the first was unloaded because what it was measured to hold, not \
+         what the catalog guessed, is what the budget counts"
+    );
 }
 
 #[test]

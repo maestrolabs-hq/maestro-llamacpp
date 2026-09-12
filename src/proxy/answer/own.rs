@@ -1,0 +1,90 @@
+//! What a llama.cpp client reads, which the `OpenAI` listing does not carry.
+//!
+//! Two replies that share one rule with the listing beside them in `reply`:
+//! saying what *could* be served is never a reason to start serving it. A
+//! client asking what models exist, or whether this server loads them on
+//! demand, must not cause a load -- so neither of these reaches a slot for
+//! anything but a read.
+//!
+//! Separate from `reply::listing` because the two answer different clients.
+//! `/v1/models` is the `OpenAI` shape and carries only names. `/models` is
+//! what a llama.cpp client reads in router mode, and carries each entry's
+//! status, its source and the context it was configured with -- the fields
+//! that decide whether that client will offer the model at all. The framing
+//! they share is `reply::json`; what remains here is only the part that
+//! differs, which is the whole reason there are two.
+
+use std::net::TcpStream;
+
+use super::Shared;
+use super::reply;
+
+/// Every entry, with whether it is loaded, in the shape a llama.cpp client
+/// reads in router mode.
+///
+/// A client's whole test for "is this a router" is that each element carries
+/// a string `id` and a string `status.value`, so both are always present and
+/// neither is ever null. The status vocabulary is the server's own: an entry
+/// is `loaded` when a child is holding it and `unloaded` otherwise. This
+/// router has no third state -- it does not sleep a model or download one --
+/// and saying so plainly is better than inventing a word a client would have
+/// to guess at.
+pub(super) fn catalogue(
+    stream: &mut TcpStream,
+    shared: &Shared,
+    head_only: bool,
+) -> std::io::Result<()> {
+    let loaded = shared.slots.loaded(&shared.catalog);
+
+    let data: Vec<serde_json::Value> = shared
+        .catalog
+        .entries
+        .iter()
+        .map(|entry| {
+            let status = if loaded.contains(&entry.id) {
+                "loaded"
+            } else {
+                "unloaded"
+            };
+            serde_json::json!({
+                "id": entry.id,
+                "object": "model",
+                "owned_by": "maestro-llamacpp",
+                // `failed` is stated rather than left out so a client reading
+                // it finds a boolean. This router has no failed state to
+                // report: a model that will not start is a refusal to the
+                // request that asked for it, not a lasting mark on the entry.
+                "status": { "value": status, "failed": false },
+                // Every entry here is configured and waiting, which is what a
+                // preset is. A client will not offer an *unloaded* model at
+                // all unless it says so -- the three conditions are autoload,
+                // not failed, and this -- so leaving it out hides exactly the
+                // models the router exists to start on demand.
+                "source": "preset",
+                // The window the entry was configured with, so a client sizes
+                // itself from the catalog rather than from its own default.
+                "meta": { "n_ctx": entry.context_size },
+            })
+        })
+        .collect();
+
+    reply::json(
+        stream,
+        &serde_json::json!({ "object": "list", "data": data }),
+        head_only,
+    )
+}
+
+/// What this server does, as the one field a client reads from it.
+///
+/// `models_autoload` is true and is not a setting: a request for a model that
+/// is not running starts it, which is the whole point of the router. A client
+/// that reads this decides not to ask for a load before a completion, and it
+/// would be right.
+pub(super) fn properties(stream: &mut TcpStream, head_only: bool) -> std::io::Result<()> {
+    reply::json(
+        stream,
+        &serde_json::json!({ "models_autoload": true }),
+        head_only,
+    )
+}

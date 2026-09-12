@@ -128,6 +128,8 @@ mod tests {
             reasoning_format: None,
             reasoning_effort: None,
             startup_timeout_seconds: 300,
+            // The stock server: these fixtures are about other things.
+            runtime: None,
             flags: BTreeMap::new(),
         }
     }

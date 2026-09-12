@@ -16,9 +16,14 @@
 /// this single value, and an operator who mistyped the variable would
 /// otherwise find out only under load.
 #[must_use]
-pub fn budget(limit_mib: Option<u32>) -> String {
+pub fn budget(limit_mib: Option<u32>, source: &str) -> String {
     match limit_mib {
-        Some(limit) => format!("memory budget: {limit} MiB, so models are unloaded to make room"),
+        // The source reads as a phrase already -- "from VARIABLE", "derived
+        // from the device (...)" -- so it is joined rather than bracketed.
+        // Wrapping it put brackets inside brackets on the derived case.
+        Some(limit) => {
+            format!("memory budget: {limit} MiB {source}, so models are unloaded to make room")
+        }
         None => "memory budget: none set, so nothing is ever unloaded \
                  (set MAESTRO_MEMORY_BUDGET_MIB)"
             .to_owned(),
@@ -66,6 +71,25 @@ pub fn reservation(limit_mib: Option<u32>, reserved_mib: u64) -> String {
     }
 }
 
+/// What an operator is told about waiting for room.
+///
+/// Said at startup beside the budget and the idle window, because the three
+/// together decide what a caller meets when the device is full: what counts as
+/// full, how long a model lingers, and whether a request queues or is turned
+/// away.
+#[must_use]
+pub fn admission_wait(waits: bool) -> String {
+    if waits {
+        "a request whose room is held by a busy model waits for it rather than \
+         being refused"
+            .to_owned()
+    } else {
+        "a request whose room is held is refused at once (set \
+         MAESTRO_ADMISSION_WAIT_SECONDS to wait for it)"
+            .to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,11 +131,11 @@ mod tests {
     #[test]
     fn the_budget_line_says_whether_anything_is_ever_unloaded() {
         assert!(
-            budget(Some(25_000)).contains("25000"),
+            budget(Some(25_000), "from MAESTRO_MEMORY_BUDGET_MIB").contains("25000"),
             "the ceiling, as configured"
         );
         assert!(
-            budget(None).contains("MAESTRO_MEMORY_BUDGET_MIB"),
+            budget(None, "unset").contains("MAESTRO_MEMORY_BUDGET_MIB"),
             "and when there is none, the variable to set -- a line saying \
              only that nothing is evicted leaves the reader nowhere to go"
         );

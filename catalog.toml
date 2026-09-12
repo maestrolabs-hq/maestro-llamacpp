@@ -295,6 +295,81 @@ load-mode = "mmap"
 image-min-tokens = "1024"
 reasoning-preserve = "true"
 
+# DavidAU's TURBO Fable Cold Fusion, a multi-stage tune and merge over the same
+# Qwen 3.8 27B everything else in this family sits on. Architecturally it is
+# the stock model: qwen35, 65 blocks, full_attention_interval of 4, 24 heads
+# over 4 key-value heads. What differs is where the speculative draft lives --
+# nextn_predict_layers is 1 and the tensors are at blk.64, inside the weights,
+# so this runs on the stock server like ornith15 and not on the patched build
+# qwen38-uncensored needs.
+#
+# Two entries over the same tune, because at this size the card will not give
+# both the better weights and the longer reach. This one takes the weights.
+[models.turbo38]
+path = "llm/qwen/qwen3.8-27b-turbo-davidau/Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q6_K.gguf"
+projector_path = "llm/qwen/qwen3.8-27b-turbo-davidau/mmproj-F16.gguf"
+# The weights are trained to 262144 and 131072 is what a Q6 of them can afford:
+# at 262144 the cache alone wants 8704 MiB, which leaves 18140 for weights and
+# these are 22921. See turbo38-long for the other side of that trade.
+context_size = 131072
+# Measured 29064 MiB resident 2026-09-12 on an RTX 5090, loaded and answering.
+# This is the thinnest margin in the file -- 120 MiB, where qwen38 has 317 and
+# ornith15 490 -- because the entry is 197 MiB heavier than qwen38 at the same
+# quantisation and context, and 29184 is the last quarter gibibyte that still
+# clears the 29347 MiB budget. A twentieth would be 30517, half a gigabyte
+# past the card's own total. Nothing co-loads beside this, and admission
+# re-reads what the device reports free before it starts anything, which is
+# the whole of what a margin this thin is leaning on.
+memory_estimate_mib = 29184
+reasoning_format = "deepseek"
+
+[models.turbo38.flags]
+ctk = "q8_0"
+ctv = "q8_0"
+fa = "on"
+np = "1"
+kv-unified = "true"
+n-gpu-layers-draft = "999"
+spec-type = "draft-mtp"
+spec-draft-n-max = "3"
+
+# The same tune four bits lighter, which is what buys the full 262144 its
+# weights were trained for. The publisher's claim is that the Cold Fusion
+# training put 4-bit within a point of 8-bit, and q4km is the floor he names
+# for tool calling -- so this is the quantisation to spend the context on, and
+# not one below it.
+[models.turbo38-long]
+path = "llm/qwen/qwen3.8-27b-turbo-davidau/Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q4_K_M.gguf"
+projector_path = "llm/qwen/qwen3.8-27b-turbo-davidau/mmproj-F16.gguf"
+# 196608 rather than the 262144 these weights hold, because the cost does not
+# scale the way the arithmetic suggests and the card was asked directly:
+# 196608 takes 27863 MiB, 229376 takes 29296, and 262144 takes 29688. Only the
+# first leaves enough room to declare a figure with any margin on it -- 224K
+# clears the budget by 51 MiB, which is not a margin, and 256K does not clear
+# it at all.
+#
+# Two things that looked like they would buy the last 64K and did not. Dropping
+# to a q5_1 or q4_0 cache made it *worse*, 30112 and 30218: llama.cpp is
+# falling back for this hybrid-attention architecture rather than honouring
+# the flag. And dropping the projector saved 131 MiB, not the 885 its file
+# weighs, so vision is kept here -- it was never what the room was going to.
+context_size = 196608
+# Measured 27863 MiB resident 2026-09-12 on an RTX 5090, loaded and answering:
+# a twenty-sixth over, to a quarter gibibyte. The usual twentieth is 29256 and
+# would round to 29440, past the budget.
+memory_estimate_mib = 28928
+reasoning_format = "deepseek"
+
+[models.turbo38-long.flags]
+ctk = "q8_0"
+ctv = "q8_0"
+fa = "on"
+np = "1"
+kv-unified = "true"
+n-gpu-layers-draft = "999"
+spec-type = "draft-mtp"
+spec-draft-n-max = "3"
+
 # Qwopus 3.8 27B. Text only -- no projector, unlike its siblings -- and the
 # sampler settings are the publisher's recommended ones rather than defaults.
 [models.qwopus38]

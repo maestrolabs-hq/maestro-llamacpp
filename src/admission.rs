@@ -320,6 +320,41 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_a_resident_makes_permanent_says_so_instead_of_naming_the_moment() {
+        // The shape that sent a real caller into a retry loop. An on-demand
+        // entry is loaded and idle, so it *will* be unloaded and the refusal
+        // names it -- which reads exactly like a clash that clears in a
+        // moment. It does not: 10_000 less the 1_000 a resident never gives
+        // back leaves 9_000, and the entry wants 9_500. Every retry, for the
+        // life of the catalog, gets this same answer.
+        let budget = Budget::new(Some(10_000));
+        let held = [
+            loaded("steward", 1_000, Residency::Resident, false, 100),
+            on_demand("big", 6_000, 50),
+        ];
+
+        let Decision::Refuse(message) = budget.admit(&held, &wanted("flagship", 9_500), None)
+        else {
+            panic!("a resident reservation this entry cannot fit beside is permanent");
+        };
+        assert!(
+            message.contains("steward"),
+            "the resident in the way is named, because it is the thing to \
+             change: {message}"
+        );
+        assert!(
+            message.contains("9000") || message.contains("9,000"),
+            "what is left once the residents have taken their share is the \
+             number that explains the refusal: {message}"
+        );
+        assert!(
+            message.contains("never") || message.contains("cannot ever"),
+            "and it is said to be permanent, so the reader edits the catalog \
+             rather than retrying: {message}"
+        );
+    }
+
+    #[test]
     fn an_entry_already_loaded_fits_even_when_the_budget_is_exhausted() {
         let budget = Budget::new(Some(10_000));
         let held = [loaded("wanted", 9_999, Residency::OnDemand, true, 1)];

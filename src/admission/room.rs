@@ -67,13 +67,47 @@ impl Room {
         loaded: &[Loaded],
     ) -> String {
         match short {
-            Short::Ledger => format!(
-                "'{}' needs {} MiB and the budget of {} MiB is held by: {}",
-                wanted.id,
-                wanted.cost_mib,
-                self.limit.unwrap_or_default(),
-                holders(loaded)
-            ),
+            Short::Ledger => {
+                let limit = self.limit.unwrap_or_default();
+
+                // Whether unloading everything that *can* be unloaded would
+                // still leave this entry short. If so the refusal is a
+                // property of the catalog, not of the moment, and saying it
+                // any other way sends the reader into a retry loop: every
+                // attempt gets this same answer, and the entries the message
+                // names keep changing, which makes it look transient.
+                let reserved: u64 = loaded
+                    .iter()
+                    .filter(|entry| entry.residency == Residency::Resident)
+                    .map(|entry| entry.cost_mib)
+                    .sum();
+                if wanted.cost_mib + reserved > limit {
+                    let residents: Vec<&str> = loaded
+                        .iter()
+                        .filter(|entry| entry.residency == Residency::Resident)
+                        .map(|entry| entry.id.as_str())
+                        .collect();
+                    return format!(
+                        "'{}' needs {} MiB and can never load: of the budget's \
+                         {limit} MiB, {reserved} MiB is permanently reserved \
+                         by resident entries ({}), leaving {}. Unloading the \
+                         rest would not be enough and waiting cannot help -- \
+                         make one of those entries on-demand, or lower this \
+                         one's estimate or context",
+                        wanted.id,
+                        wanted.cost_mib,
+                        residents.join(", "),
+                        limit - reserved,
+                    );
+                }
+
+                format!(
+                    "'{}' needs {} MiB and the budget of {limit} MiB is held by: {}",
+                    wanted.id,
+                    wanted.cost_mib,
+                    holders(loaded)
+                )
+            }
             Short::Device => {
                 let free = self.device_free.unwrap_or_default();
                 let beside = if loaded.is_empty() {

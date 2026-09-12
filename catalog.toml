@@ -225,11 +225,20 @@ kv-unified = "true"
 [models.qwen3-06b]
 path = "llm/qwen/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf"
 context_size = 32768
-# Resident, so the steward always has something to talk to. The 0.6B rather
-# than the 4B beside it: both are pinned to the processor, and what a
-# resident reserves is charged against a budget derived from the device, so
-# the cheaper one to hold is the one to hold.
-residency = "resident"
+# On demand, and nothing on this estate is resident -- which is a decision the
+# arithmetic makes rather than a preference.
+#
+# What a resident reserves is charged against a budget derived from the device
+# and is never evicted, so the largest entry must fit in what is left *after*
+# it. Here the budget is 29,347 MiB of a 32,607 MiB card, and qwen38 wants
+# 29,184. Hold back even this 1 GiB steward and the flagship is short by 861
+# MiB and can never load -- not once, not after a wait, not with every other
+# model evicted. The refusal names whatever else happens to be loaded, which
+# reads like a transient clash and is not one.
+#
+# So the steward loads on demand like everything else. A load it pays for once
+# is worth more than a model it permanently locks out.
+residency = "on-demand"
 memory_estimate_mib = 1024
 
 [models.qwen3-06b.flags]

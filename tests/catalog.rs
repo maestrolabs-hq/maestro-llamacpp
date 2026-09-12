@@ -209,6 +209,10 @@ fn one_entry_reports_all_of_its_own_faults() {
     }
 }
 
+/// The card this catalog is measured against, as the budget is derived from
+/// it: the total less a tenth.
+const CARD_MIB: u64 = 32_607;
+
 /// The file that ships cannot rot away from the parser that reads it.
 #[test]
 fn the_shipped_catalog_is_valid() {
@@ -217,12 +221,33 @@ fn the_shipped_catalog_is_valid() {
     let catalog = Catalog::parse(&text).unwrap_or_else(|report| {
         panic!("the shipped catalog must be valid:\n{report}");
     });
+    // What a resident reserves is never evicted, so the largest entry has to
+    // fit in what is left *after* the reservation -- not merely inside the
+    // budget. This catalog once held a 1 GiB steward resident beside a 29,184
+    // MiB flagship, and the flagship could never load: not after a wait, not
+    // with every other model unloaded. Nothing in the shape of the file said
+    // so, and the refusal named whichever models happened to be loaded, which
+    // reads like a clash that clears in a moment.
+    //
+    // The card is named here because this catalog is written for this machine
+    // and the repository says so; a catalog that moves to another card is
+    // expected to fail this and be re-measured, which is the coupling working
+    // rather than the test being brittle.
+    let budget = CARD_MIB - CARD_MIB / 10;
+    let reservation = catalog.resident_reservation_mib();
+    let largest = catalog
+        .entries
+        .iter()
+        .map(|entry| u64::from(entry.memory_estimate_mib))
+        .max()
+        .expect("the shipped catalog has entries");
+
     assert!(
-        catalog
-            .entries
-            .iter()
-            .any(|entry| entry.residency == Residency::Resident),
-        "one entry is held loaded, or the steward has nothing to talk to"
+        largest + reservation <= budget,
+        "the largest entry needs {largest} MiB and the resident entries hold \
+         {reservation} MiB of the {budget} MiB budget back for good, so it \
+         could never load. Either make a resident on-demand, or bring the \
+         largest entry's estimate or context down."
     );
 }
 

@@ -205,25 +205,37 @@ for. A start that fails only by being attempted -- a startup budget expiring,
 a model costing more than its estimate -- cannot be prevented this way, and
 the room is already gone when it does.
 
-**The router does not survive being signalled, and its children do.** `serve`
-runs until the process ends, so `stop` is never reached: on `SIGTERM` -- what
-`systemctl stop`, `kill` and a container stop all send -- the router dies and
-every `llama-server` it started keeps running and keeps its memory. A terminal
-interrupt is different, because children are left in the process group
-deliberately and `Ctrl-C` reaches them too.
+**A signalled router stops its children before it goes.** `serve` runs until
+the process is asked to end, and that end is a signal: `SIGTERM` -- what
+`systemctl stop`, `kill` and a container stop all send -- as well as `SIGINT`
+and `SIGHUP` on Unix, and Ctrl-C, Ctrl-Break or a closing console on Windows.
+On any of them the router ends every `llama-server` it started, says how many
+it ended, and exits zero:
 
-The cost lands on the budget. A restarted router builds its table empty, so it
-counts nothing while the orphans still hold real memory, and it will then
-admit a full budget of models on top of them. Nothing in the process table
-ties a stray server to the router that started it, so after a signalled stop,
-look for them:
+```text
+stopping: ended 2 children
+```
+
+A second signal while that stop is still running ends the process at once,
+with a failing status because the children were then not waited for. It is
+the way out from a child that will not die: without it the second signal
+would queue behind the first, and nothing short of `SIGKILL` could end the
+router.
+
+Two ends this cannot cover, and nothing inside a process can. Being killed
+outright -- `SIGKILL`, `taskkill /F`, an out-of-memory kill -- reaches no
+handler, so the children stay, and keep their memory. And a child that is
+mid-answer when the signal arrives is held by that answer rather than by the
+router: the router's claim on it is released, but the process exits before
+the answer ends, and that child is left behind. Either way a restarted router
+builds its table empty, counts nothing while the strays hold real memory, and
+admits a full budget of models on top of them. Nothing in the process table
+ties a stray server to the router that started it, so after such an end, look
+for them:
 
 ```sh
 pgrep -af llama-server
 ```
-
-A signal handler needs a dependency and a Windows job object, which is a
-change with its own gates to clear rather than a line to add here.
 
 **Four smaller things are known and not addressed.** Recorded so the next
 slice inherits them rather than discovering them:

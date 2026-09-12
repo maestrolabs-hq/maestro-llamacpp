@@ -13,6 +13,8 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::thread;
 use std::time::Instant;
 
 use maestro_llamacpp::admission::Budget;
@@ -66,11 +68,10 @@ fn report(outcome: Result<(), String>) -> ExitCode {
 /// one.
 ///
 /// Long-running by design, unlike `launch`: now there is something to serve.
-/// It returns only when the process is ended -- and because that end is
-/// usually a signal, `Router::stop` is never reached and the children outlive
-/// it. What that costs, and how to find them afterwards, is in `README.md`
-/// under what eviction never does. A handler needs a dependency and a Windows
-/// job object, so it is a change of its own rather than a line here.
+/// It runs until the process is asked to end, and that end is a signal, so a
+/// signal is what reaches `Router::stop`: see [`stop_on_termination`]. What
+/// no handler can cover, and how to find the children afterwards, is in
+/// `README.md` under what eviction never does.
 fn serve(catalog: &Path, address: Option<&str>) -> Result<(), String> {
     let parsed = read(catalog)?;
     let root = models_root().map_err(|failure| failure.to_string())?;
@@ -90,6 +91,7 @@ fn serve(catalog: &Path, address: Option<&str>) -> Result<(), String> {
 
     let limits = Limits::new(budget, idle_window);
     let router = Router::bind(wanted, parsed, root, server, limits).map_err(|f| f.to_string())?;
+    let router = Arc::new(router);
     let bound = router.address();
     println!("serving on http://{bound}");
     println!("  http://{bound}/models/<model>/v1/chat/completions");
@@ -101,8 +103,56 @@ fn serve(catalog: &Path, address: Option<&str>) -> Result<(), String> {
     println!("{}", startup::idle_window(idle_seconds));
     println!("a streamed reply is passed through as it arrives");
 
+    // Registered after the bind and before anything can start a child: a
+    // signal before this point ends a router that has nothing to stop.
+    stop_on_termination(Arc::clone(&router))?;
     router.serve();
     Ok(())
+}
+
+/// Ends the children when the process is asked to end, then exits.
+///
+/// A child is a separate process that nothing in the operating system ties to
+/// this one, and `Router::serve` never returns. Without this, `SIGTERM` --
+/// what `systemctl stop`, `kill` and a container stop all send -- ended the
+/// router and left every server it had started running with its memory. The
+/// handler covers the ways a process is asked to end: `SIGTERM`, `SIGINT` and
+/// `SIGHUP` on Unix; Ctrl-C, Ctrl-Break and a closing console on Windows. What
+/// it cannot cover is being killed outright -- `SIGKILL`, `taskkill /F` --
+/// which no process is allowed to handle.
+///
+/// The stop runs on a thread of its own so that the handler returns at once
+/// and a second signal is acted on rather than queued: it ends the process
+/// immediately, with a failing status because the children were not waited
+/// for. Stopping inside the handler would make the second signal wait for the
+/// first, and a stop held up by a child that will not die would then be a
+/// router nothing but `SIGKILL` can end -- the state this exists to remove.
+fn stop_on_termination(router: Arc<Router>) -> Result<(), String> {
+    let mut signalled = false;
+    ctrlc::set_handler(move || {
+        if signalled {
+            eprintln!("signalled again: exiting without waiting for the children");
+            std::process::exit(1);
+        }
+        signalled = true;
+        let stopping = Arc::clone(&router);
+        thread::spawn(move || {
+            let held = stopping.loaded().len();
+            stopping.stop();
+            println!("stopping: ended {}", children(held));
+            std::process::exit(0);
+        });
+    })
+    .map_err(|error| format!("cannot handle termination signals: {error}"))
+}
+
+/// `1 child`, `2 children`, so the stop line reads as a sentence.
+fn children(count: usize) -> String {
+    if count == 1 {
+        "1 child".to_owned()
+    } else {
+        format!("{count} children")
+    }
 }
 
 /// One usable catalog, or why it is not.

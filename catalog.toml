@@ -299,12 +299,23 @@ reasoning-preserve = "true"
 # sampler settings are the publisher's recommended ones rather than defaults.
 [models.qwopus38]
 path = "llm/qwen/qwopus3.8-27b/Qwopus3.8-27B-UD-Q4_K_XL.gguf"
-context_size = 131072
-# Measured 22683 MiB resident 2026-09-12 on an RTX 5090, by `model-router
-# bench` at 111 tok/s: a twentieth over, to a quarter gibibyte. Worth noting
-# that arithmetic over the file size suggested 21504, which is below what it
-# actually took -- the guess would have been the out-of-memory path.
-memory_estimate_mib = 24064
+# The whole 262144 these weights were trained to, which no other 27B entry
+# here can afford. This is the lightest of them by some way, and the room it
+# saves is spent on context rather than left idle.
+context_size = 262144
+# Measured 28430 MiB resident 2026-09-12 on an RTX 5090, loaded and answering.
+# The earlier figure of 24064 was this entry at 131072, which measured 22683 --
+# so the second 128K cost 5747 MiB, and unlike gemma4 this model has no window
+# to keep that cheap.
+#
+# This entry runs *above* what arithmetic over its files predicts, which was
+# already true at 131072: the derivation said 21504 where it took 22683, and
+# says 27350 here where it takes 28430. So the figure below is measured and
+# not derived, and the margin over it is a fiftieth rather than a twentieth --
+# a twentieth is 29852, past the 29347 MiB the router derives from the device.
+# What is left under the budget, 419 MiB, is more than qwen38 has carried
+# since it was measured.
+memory_estimate_mib = 28928
 reasoning_format = "deepseek"
 
 [models.qwopus38.flags]
@@ -330,17 +341,19 @@ top-k = "40"
 [models.gemma4]
 path = "llm/google/gemma-4-26b/gemma-4-26B_q4_0-it.gguf"
 projector_path = "llm/google/gemma-4-26b/gemma-4-26B-it-mmproj.gguf"
-# 131072 rather than the 32768 this ran at, and it is very nearly free. Of
-# this model's 30 layers, 25 attend over a 1024-token sliding window and only
-# 5 keep a cache that grows with the context -- so four times the window moved
-# the derived figure by 1920 MiB, and quantising the cache below gave most of
-# that back. The weights are trained to 262144; the stop here is the card.
-context_size = 131072
-# Measured 17834 MiB resident 2026-09-12 on an RTX 5090, loaded and answering:
-# a twentieth over, to a quarter gibibyte. The earlier figure of 17664 was this
-# entry at 32768 on an f16 cache, and it measured 16764 -- so four times the
-# context cost 1070 MiB, which is what a sliding window buys.
-memory_estimate_mib = 18944
+# The whole 262144 these weights were trained to, up from the 32768 this ran
+# at, and it is very nearly free. Of this model's 30 layers, 25 attend over a
+# 1024-token sliding window and only 5 keep a cache that grows with the
+# context -- so eight times the window costs about what one extra layer would.
+# Nothing here is the card's doing: 262144 is where the training stopped.
+context_size = 262144
+# Measured 19847 MiB resident 2026-09-12 on an RTX 5090, loaded and answering:
+# a twentieth over, to a quarter gibibyte. The trail behind it, all measured on
+# the same card the same day: 16764 at 32768 on an f16 cache, 17834 at 131072
+# once the cache was quantised, 19847 at 262144. Eight times the context for
+# 3083 MiB, which is what a sliding window buys and the reason this entry gets
+# the long context the 27B ones cannot afford.
+memory_estimate_mib = 20992
 
 [models.gemma4.flags]
 # Quantised keys and values, as every other large entry here already had. This

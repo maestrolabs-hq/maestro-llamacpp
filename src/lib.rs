@@ -21,4 +21,5 @@ pub mod idle;
 pub mod launch;
 pub mod memory;
 pub mod proxy;
+pub mod queue;
 pub mod startup;

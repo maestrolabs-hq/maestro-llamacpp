@@ -14,12 +14,14 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::admission::{Budget, Decision, Wanted};
+use crate::admission::Budget;
 use crate::catalog::{Catalog, Entry};
 use crate::launch::{Child, Failure, Server};
+use crate::queue::Wait;
 
 use super::loaded::{Slot, Take, live_child, take_if_idle};
 
+mod room;
 mod start;
 mod sweep;
 mod view;
@@ -46,11 +48,12 @@ pub(super) struct Slots {
     /// whole deadlock argument: one lock order, so no cycle.
     admission: Mutex<()>,
     budget: Budget,
+    wait: Wait,
 }
 
 impl Slots {
     /// One slot per entry the catalog carries, all of them empty.
-    pub(super) fn new(catalog: &Catalog, budget: Budget) -> Self {
+    pub(super) fn new(catalog: &Catalog, budget: Budget, wait: Wait) -> Self {
         Self {
             by_id: catalog
                 .entries
@@ -59,6 +62,7 @@ impl Slots {
                 .collect(),
             admission: Mutex::new(()),
             budget,
+            wait,
         }
     }
 
@@ -145,33 +149,13 @@ impl Slots {
         // than its estimate -- because those are only knowable by trying.
         Server::model_file(entry, root)?;
 
-        // The device is asked now, under the admission lock, so the room it
-        // reports is the room this decision acts on and no other load can
-        // have changed it in between. It counts everything on the machine,
-        // which is why it is asked at all: the ledger only knows what this
-        // router loaded.
-        let device_free_mib = self.budget.probe().device().map(|device| device.free_mib());
-        match self
-            .budget
-            .admit(&self.held(catalog), &Wanted::of(entry), device_free_mib)
-        {
-            Decision::Fits => {}
-            Decision::Unload(ids) => {
-                say(&format!(
-                    "{}: unloading {} to make room",
-                    entry.id,
-                    ids.join(", ")
-                ));
-                if let Err(blocker) = self.unload(&ids) {
-                    return Err(Failure::Refused(format!(
-                        "'{}' needs room held by '{blocker}', which a request \
-                         reached first; this may succeed on a retry",
-                        entry.id
-                    )));
-                }
-            }
-            Decision::Refuse(message) => return Err(Failure::Refused(message)),
-        }
+        // Room is made here rather than decided here: when what holds it is
+        // busy rather than resident, this waits for it. The admission lock is
+        // held throughout, which is what makes waiting correct rather than
+        // merely patient -- a second request that would compete for the same
+        // memory queues behind this one instead of racing it to the same
+        // conclusion.
+        self.make_room(catalog, entry)?;
 
         let loaded = self.start(entry, server, root)?;
         // The handed-out handle and the slot's own come into existence

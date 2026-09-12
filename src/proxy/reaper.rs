@@ -121,6 +121,7 @@ pub(super) fn run(shared: &Weak<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::queue::Wait;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -196,7 +197,8 @@ mod tests {
             &std::env::current_exe().expect("this test binary's own path"),
         ))
         .expect("this test binary's own path is a file");
-        let slots = super::super::slots::Slots::new(&catalog, Budget::new(None));
+        let slots =
+            super::super::slots::Slots::new(&catalog, Budget::new(None), Wait::new(Duration::ZERO));
 
         let shared = Arc::new(Shared {
             catalog,

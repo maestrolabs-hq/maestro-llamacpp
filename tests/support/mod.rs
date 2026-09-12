@@ -325,6 +325,29 @@ pub fn windowed(
         root,
         maestro_llamacpp::admission::Budget::new(limit_mib),
         idle_window,
+        Duration::ZERO,
+    )
+}
+
+/// The same, under a stated budget and a stated wait for room.
+///
+/// Zero, which every other helper here passes, is the behaviour this router
+/// had before waiting existed: a request whose room is held is refused at
+/// once. Only the tests that are about queueing state anything else, so the
+/// rest keep asserting what they were written against.
+///
+/// # Panics
+///
+/// If the catalog is not usable or the port cannot be bound, which is a broken
+/// test rather than a failing one.
+#[must_use]
+pub fn queued(catalog: &str, root: ModelsRoot, limit_mib: Option<u32>, wait: Duration) -> Serving {
+    launched(
+        catalog,
+        root,
+        maestro_llamacpp::admission::Budget::new(limit_mib),
+        Duration::ZERO,
+        wait,
     )
 }
 
@@ -352,6 +375,7 @@ pub fn probed(
         root,
         maestro_llamacpp::admission::Budget::with_probe(limit_mib, probe),
         Duration::ZERO,
+        Duration::ZERO,
     )
 }
 
@@ -361,6 +385,7 @@ fn launched(
     root: ModelsRoot,
     budget: maestro_llamacpp::admission::Budget,
     idle_window: Duration,
+    wait: Duration,
 ) -> Serving {
     let parsed = maestro_llamacpp::catalog::Catalog::parse(catalog).expect("a usable catalog");
     let server = maestro_llamacpp::launch::Server::located(Some(&stub_binary()))
@@ -368,6 +393,7 @@ fn launched(
     let limits = maestro_llamacpp::idle::Limits::new(
         budget,
         maestro_llamacpp::idle::IdleWindow::new(idle_window),
+        maestro_llamacpp::queue::Wait::new(wait),
     );
     let router = maestro_llamacpp::proxy::Router::bind(
         "127.0.0.1:0".parse().expect("a loopback address"),

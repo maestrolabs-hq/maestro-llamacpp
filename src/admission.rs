@@ -31,120 +31,15 @@
 //! ledger says. Where the machine cannot be asked, the device question is
 //! not asked, and the ledger decides alone as it always did.
 
-use std::time::Instant;
-
-use crate::catalog::{Entry, Residency};
-use crate::memory::Measurement;
+use crate::catalog::Residency;
 
 mod budget;
 mod room;
+mod subject;
 
 pub use budget::Budget;
 use room::{Freed, Room};
-
-/// The flags that keep every layer off the device, in the three spellings
-/// the server accepts.
-///
-/// The one flag this router reads rather than passes through, because the
-/// device question cannot be asked without it: a model with every layer on
-/// the processor holds none of the device's room, and refusing it for want
-/// of that room would refuse the resident entry whenever the large model
-/// beside it fills the device -- which is the arrangement the shipped catalog
-/// was measured in.
-const LAYERS_ON_DEVICE: [&str; 3] = ["n-gpu-layers", "ngl", "gpu-layers"];
-
-/// One model the router has loaded, as admission needs to see it.
-pub struct Loaded {
-    /// Which entry it is.
-    pub id: String,
-    /// What it costs: its estimate, or what it was measured at if that is
-    /// more.
-    pub cost_mib: u64,
-    /// What unloading it would free on the device: what it was seen to hold
-    /// there, or its share of the estimate if nothing could be seen.
-    pub device_mib: u64,
-    /// Whether it may ever be unloaded.
-    pub residency: Residency,
-    /// Whether anything is reading from it.
-    pub busy: bool,
-    /// When it last answered, so the coldest is unloaded first.
-    pub last_used: Instant,
-}
-
-impl Loaded {
-    /// What admission needs to know about one entry that is loaded.
-    ///
-    /// Built here rather than at the call site because these fields are this
-    /// module's own. A caller that names all six is a caller that has to be
-    /// edited every time the policy needs one more, and the facts it actually
-    /// holds -- whether something is reading, when it last answered, and what
-    /// the machine measured -- are the only ones it is asked for.
-    ///
-    /// The measurement raises the cost and never lowers it. What a model
-    /// holds a moment after loading is a floor: the context fills as it is
-    /// used, so an estimate above the measurement is the operator saying what
-    /// the model grows to, and that is kept.
-    #[must_use]
-    pub fn of(entry: &Entry, busy: bool, last_used: Instant, measured: &Measurement) -> Self {
-        let estimate = u64::from(entry.memory_estimate_mib);
-        Self {
-            id: entry.id.clone(),
-            cost_mib: measured
-                .largest_mib()
-                .map_or(estimate, |mib| mib.max(estimate)),
-            device_mib: measured
-                .device_mib
-                .unwrap_or_else(|| device_need_mib(entry)),
-            residency: entry.residency,
-            busy,
-            last_used,
-        }
-    }
-}
-
-/// The entry a caller wants started, as admission needs to see it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Wanted {
-    /// Which entry it is.
-    pub id: String,
-    /// What loading it is expected to cost.
-    pub cost_mib: u64,
-    /// How much of that lands on the device.
-    pub device_mib: u64,
-}
-
-impl Wanted {
-    /// One entry, at its catalog estimate.
-    #[must_use]
-    pub fn of(entry: &Entry) -> Self {
-        Self {
-            id: entry.id.clone(),
-            cost_mib: u64::from(entry.memory_estimate_mib),
-            device_mib: device_need_mib(entry),
-        }
-    }
-}
-
-/// What an entry is expected to hold on the device: its whole estimate,
-/// unless its flags keep every layer off it.
-///
-/// A model kept off the device still holds a small runtime context there,
-/// and that is not counted: it is under the margin the derived budget keeps
-/// back, and the measurement taken once the model has loaded counts it from
-/// then on.
-fn device_need_mib(entry: &Entry) -> u64 {
-    let off_device = LAYERS_ON_DEVICE.iter().any(|key| {
-        entry
-            .flags
-            .get(*key)
-            .is_some_and(|value| value.trim() == "0")
-    });
-    if off_device {
-        0
-    } else {
-        u64::from(entry.memory_estimate_mib)
-    }
-}
+pub use subject::{Loaded, Wanted};
 
 /// What admission decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,7 +48,19 @@ pub enum Decision {
     Fits,
     /// There is room once these are unloaded, coldest first.
     Unload(Vec<String>),
+    /// There is not yet, and what holds the room is on-demand and busy.
+    ///
+    /// Separated from [`Decision::Refuse`] because the two are only alike on
+    /// the surface. What holds the room here would be a candidate the moment
+    /// nothing were reading it, so the room frees itself and waiting is the
+    /// difference between a router that queues and one that tells every caller
+    /// to write a retry loop.
+    Blocked(String),
     /// There is not, and this says what is holding the memory.
+    ///
+    /// Permanent as far as this request is concerned: larger than the whole
+    /// budget, or held by residents that never become candidates. Waiting
+    /// changes nothing, so the caller is told at once rather than held.
     Refuse(String),
 }
 
@@ -230,15 +137,34 @@ impl Budget {
 
         match room.short(wanted, &freed) {
             None => Decision::Unload(unload),
-            Some(short) => Decision::Refuse(room.refusal(short, wanted, &freed, loaded)),
+            Some(short) => {
+                let message = room.refusal(short, wanted, &freed, loaded);
+
+                // Whether anything holding the room would be a candidate if it
+                // were idle. That, and only that, is what makes waiting worth
+                // doing: a resident never becomes a candidate however long
+                // anyone waits, and neither does a budget too small for the
+                // entry at any occupancy.
+                let frees_itself = loaded.iter().any(|entry| {
+                    entry.residency == Residency::OnDemand && entry.busy && entry.id != wanted.id
+                });
+
+                if frees_itself {
+                    Decision::Blocked(message)
+                } else {
+                    Decision::Refuse(message)
+                }
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
-    use crate::catalog::RelativePath;
+    use crate::catalog::{Entry, RelativePath};
     use crate::memory::Measurement;
     use std::collections::BTreeMap;
     use std::time::Duration;
@@ -352,18 +278,43 @@ mod tests {
     }
 
     #[test]
-    fn when_every_candidate_is_exhausted_the_decision_refuses_and_says_why() {
+    fn when_the_room_is_held_by_something_busy_the_decision_blocks_and_says_why() {
         let budget = Budget::new(Some(10_000));
         let held = [
             loaded("busy", 8_000, Residency::OnDemand, true, 100),
             loaded("pinned", 1_000, Residency::Resident, false, 50),
         ];
 
-        let Decision::Refuse(message) = budget.admit(&held, &wanted("wanted", 5_000), None) else {
-            panic!("nothing can be unloaded, so this cannot be served");
+        // Nothing can be unloaded *now*, which is why this is not `Unload`.
+        // But `busy` is on-demand and would be a candidate the moment its
+        // reader finished, so the room frees itself and the caller may
+        // usefully wait for it. Telling that apart from a refusal is the whole
+        // of `Blocked`.
+        let Decision::Blocked(message) = budget.admit(&held, &wanted("wanted", 5_000), None) else {
+            panic!("the room is held by something that will release it");
         };
         assert!(
             message.contains("busy") && message.contains("pinned"),
+            "the message still names what is holding the memory: {message}"
+        );
+    }
+
+    #[test]
+    fn when_a_resident_holds_the_room_the_decision_refuses_because_waiting_cannot_help() {
+        let budget = Budget::new(Some(10_000));
+        // No on-demand entry at all, so nothing here will ever stop being a
+        // blocker. A caller held at this would be held until its wait expired
+        // and then told exactly what it could have been told at once.
+        let held = [
+            loaded("pinned", 8_000, Residency::Resident, false, 100),
+            loaded("also-pinned", 1_000, Residency::Resident, false, 50),
+        ];
+
+        let Decision::Refuse(message) = budget.admit(&held, &wanted("wanted", 5_000), None) else {
+            panic!("residents never become candidates, so waiting is pointless");
+        };
+        assert!(
+            message.contains("pinned"),
             "the refusal names what is holding the memory: {message}"
         );
     }

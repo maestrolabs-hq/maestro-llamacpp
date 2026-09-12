@@ -112,21 +112,6 @@ const ACCEPTED: &[(&str, &str)] = &[
          what makes either of them readable.",
     ),
     (
-        "budgeted <-> windowed",
-        "Two of the three ways a test builds a serving router, each stating \
-         one more setting than the one below it and delegating downward: a \
-         budget, then a budget and a window. The shape they share is the \
-         delegation itself. Merging them would be one constructor taking \
-         every setting, which is exactly what the tests calling `serving` \
-         are spared from naming.",
-    ),
-    (
-        "budgeted <-> probed",
-        "The same delegation with the third way: a budget on a machine whose \
-         figures the test states. It delegates to the same shared launch as \
-         `windowed`, so what remains in each is only the setting it names.",
-    ),
-    (
         "windowed <-> probed",
         "Both hand a budget and a window to the shared launch, differing only \
          in which of the two they let the caller state. A merged function \
@@ -149,17 +134,6 @@ const ACCEPTED: &[(&str, &str)] = &[
          Merging them would need a trait over from_le_bytes that the \
          standard library does not offer, and inlining them would spell the \
          width at every call site where the name says it once.",
-    ),
-    (
-        "the_budget_line_says_whether_anything_is_ever_unloaded \
-         <-> the_idle_window_line_says_whether_anything_is_ever_unloaded_for_sitting_idle",
-        "Two startup lines, each asserting the same two-branch shape: the \
-         configured value appears when there is one, and the variable to set \
-         appears when there is not. That is the startup-reporting contract \
-         from `budget` and `idle_window` themselves, not duplication to \
-         remove -- the two functions report unrelated settings, and merging \
-         their tests would take the variable name and the configured value as \
-         parameters, saying nothing either name did not already say.",
     ),
     (
         "as_residency <-> as_runtime",
@@ -193,6 +167,29 @@ const ACCEPTED: &[(&str, &str)] = &[
          `runtime` field, which is the gate comparing structure rather than \
          meaning, and recording it is cheaper than shaping a fixture around a \
          similarity score.",
+    ),
+    (
+        "budgeted <-> queued",
+        "The delegation family again, with the way that states a wait. Each \
+         of these names one setting and hands the rest to the shared launch, \
+         so the shape they share is the handing-on itself. Merging them is \
+         one constructor taking every setting, which is exactly what the \
+         tests calling `serving` are spared from naming.",
+    ),
+    (
+        "windowed <-> queued",
+        "Both state one setting over a budget -- an idle window, or how long \
+         a request waits for room -- and are otherwise the same delegation. \
+         A merged function would take both, and every idle-unload test would \
+         have to say it does not wait while every queueing test said it has \
+         no window.",
+    ),
+    (
+        "queued <-> probed",
+        "The same delegation with the way that states a machine. What each \
+         names does not overlap at all: how long to wait for room, against \
+         what the device and every child report. They are alike only in \
+         having one parameter and passing the rest on.",
     ),
 ];
 

@@ -127,7 +127,7 @@ impl Router {
         let listener = TcpListener::bind(address)
             .map_err(|error| Failure::Unavailable(format!("cannot bind {address}: {error}")))?;
 
-        let slots = Slots::new(&catalog, limits.budget);
+        let slots = Slots::new(&catalog, limits.budget, limits.wait);
 
         Ok(Self {
             listener,

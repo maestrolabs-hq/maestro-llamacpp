@@ -4,8 +4,6 @@
 //! exposed: `admission` decides what fits under a ceiling, and this decides
 //! what the ceiling is. Nothing here weighs a model against anything.
 
-use std::io::Write;
-
 use crate::launch::Failure;
 use crate::memory::Probe;
 
@@ -126,17 +124,13 @@ impl Budget {
         // `export MAESTRO_MEMORY_BUDGET_MIB=` is a plausible slip, and reading
         // it as a budget of nothing would refuse every model on the machine.
         let Some(value) = std::env::var_os(VARIABLE).filter(|value| !value.is_empty()) else {
-            let derived = Self::derived(Probe::detect());
-            if let Some(limit) = derived.limit_mib {
-                // Written rather than printed: a closed standard output is
-                // not a reason to stop serving.
-                drop(writeln!(
-                    std::io::stdout(),
-                    "memory budget: {limit} MiB, {}",
-                    derived.source
-                ));
-            }
-            return Ok(derived);
+            // Reported by the caller, not here. A constructor that wrote to
+            // standard output printed before the command had said what it was
+            // serving on, which put a diagnostic line above the address -- and
+            // anything reading that address off the first line got the
+            // diagnostic instead. `source` carries what to say; `startup` says
+            // it, in the order the command chooses.
+            return Ok(Self::derived(Probe::detect()));
         };
 
         let text = value.to_string_lossy();

@@ -22,6 +22,7 @@ use maestro_llamacpp::catalog::Catalog;
 use maestro_llamacpp::idle::{IdleWindow, Limits};
 use maestro_llamacpp::launch::{Server, models_root};
 use maestro_llamacpp::proxy::Router;
+use maestro_llamacpp::queue::Wait;
 use maestro_llamacpp::startup;
 
 const USAGE: &str = "usage: model-router check <catalog>\n       \
@@ -88,17 +89,21 @@ fn serve(catalog: &Path, address: Option<&str>) -> Result<(), String> {
     let idle_window = IdleWindow::configured().map_err(|failure| failure.to_string())?;
     // Composed before the catalog is handed over, because binding takes it.
     let limit_mib = budget.limit_mib();
+    let budget_source = budget.source().to_owned();
     let idle_seconds = idle_window.seconds();
     let reserved_mib = parsed.resident_reservation_mib();
 
-    let limits = Limits::new(budget, idle_window);
+    let wait = Wait::configured().map_err(|failure| failure.to_string())?;
+    let waiting = wait.waits();
+    let limits = Limits::new(budget, idle_window, wait);
     let router = Router::bind(wanted, parsed, root, server, limits).map_err(|f| f.to_string())?;
     let router = Arc::new(router);
     let bound = router.address();
     println!("serving on http://{bound}");
     println!("  http://{bound}/models/<model>/v1/chat/completions");
     println!("  http://{bound}/v1/chat/completions   (routed by the body's model)");
-    println!("{}", startup::budget(limit_mib));
+    println!("{}", startup::budget(limit_mib, &budget_source));
+    println!("{}", startup::admission_wait(waiting));
     if reserved_mib > 0 {
         println!("{}", startup::reservation(limit_mib, reserved_mib));
     }

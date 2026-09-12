@@ -249,6 +249,7 @@ fn a_discovered_entry_is_served_like_any_other() {
     let limits = maestro_llamacpp::idle::Limits::new(
         maestro_llamacpp::admission::Budget::new(None),
         maestro_llamacpp::idle::IdleWindow::new(std::time::Duration::ZERO),
+        maestro_llamacpp::queue::Wait::new(std::time::Duration::ZERO),
     );
     let router = std::sync::Arc::new(
         maestro_llamacpp::proxy::Router::bind(

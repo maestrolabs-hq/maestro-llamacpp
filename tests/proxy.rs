@@ -82,6 +82,23 @@ fn the_body_decides_which_child_answers() {
 }
 
 #[test]
+fn a_reasoning_effort_field_reaches_the_child_exactly_as_sent() {
+    let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
+
+    // Unlike the single-field bodies beside this test, the spacing and field
+    // order here change if the router forwards re-serialised JSON.
+    let body = r#"{"reasoning_effort": "high", "model": "gemma3"}"#;
+    let reply = request(serving.address(), &post("/v1/echo", body));
+
+    assert_eq!(status(&reply), Some(200), "the child answered:\n{reply}");
+    assert!(
+        reply.contains(&format!("body: {body}")),
+        "per-request reasoning effort must reach llama-server as the caller \
+         wrote it, not as JSON re-serialised after routing:\n{reply}"
+    );
+}
+
+#[test]
 fn the_generic_endpoint_strips_no_prefix_from_the_path() {
     let serving = serving(&catalog_text(""), ModelsRoot::with(&[MODEL]));
 

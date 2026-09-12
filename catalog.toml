@@ -182,7 +182,11 @@ spec-draft-n-max = "3"
 # hand. It is what `models.ini` points at today.
 [models.gemma3]
 path = ".cache/llama.cpp/models--ggml-org--gemma-3-1b-it-GGUF/snapshots/f9c28bcd85737ffc5aef028638d3341d49869c27/gemma-3-1b-it-Q4_K_M.gguf"
-memory_estimate_mib = 2560
+# Measured 1553 MiB on the device, twice, by `model-router bench`. The 2560 it
+# shipped at was the estimator's figure from before it learned that this
+# architecture windows most of its layers, and nothing re-read it afterwards:
+# fixing a derivation does not correct a number already written down.
+memory_estimate_mib = 1792
 startup_timeout_seconds = 60
 
 [models.gemma3.flags]
@@ -240,7 +244,13 @@ context_size = 40960
 # it reserved a quarter of that budget and refused every 27B entry, for a
 # model that answers at ten tokens a second and loads in three.
 residency = "on-demand"
-memory_estimate_mib = 4096
+# Measured 811 MiB on the device, twice, by `model-router bench`. It shipped at
+# 4096, which was arithmetic over a 4B model's weights and true of a model on
+# the card -- this one is pinned to the processor, so the device sees only its
+# context and compute buffers. Over-declaring is the safe direction and it
+# still cost something: better than three gibibytes of budget reserved against
+# an entry that never wanted it.
+memory_estimate_mib = 1024
 
 [models.qwen3-4b.flags]
 # Qwen3's thinking figures, as on qwen3-06b and for the same reason: this file
@@ -357,19 +367,27 @@ reasoning-preserve = "true"
 [models.turbo38]
 path = "llm/qwen/qwen3.8-27b-turbo-davidau/Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q6_K.gguf"
 projector_path = "llm/qwen/qwen3.8-27b-turbo-davidau/mmproj-F16.gguf"
-# The weights are trained to 262144 and 131072 is what a Q6 of them can afford:
-# at 262144 the cache alone wants 8704 MiB, which leaves 18140 for weights and
-# these are 22921. See turbo38-long for the other side of that trade.
-context_size = 131072
-# Measured 29064 MiB resident 2026-09-12 on an RTX 5090, loaded and answering.
-# This is the thinnest margin in the file -- 120 MiB, where qwen38 has 317 and
-# ornith15 490 -- because the entry is 197 MiB heavier than qwen38 at the same
-# quantisation and context, and 29184 is the last quarter gibibyte that still
-# clears the 29347 MiB budget. A twentieth would be 30517, half a gigabyte
-# past the card's own total. Nothing co-loads beside this, and admission
-# re-reads what the device reports free before it starts anything, which is
-# the whole of what a margin this thin is leaning on.
-memory_estimate_mib = 29184
+# 98304, and this entry is the reason `bench` exists. It shipped at 131072 on
+# a hand reading of 29064 MiB, taken by asking for eight tokens and watching
+# nvidia-smi either side. `bench` asks for a hundred and twenty-eight and
+# measured 29656, 29745 and 29745 on three consecutive runs -- past the 29347
+# MiB budget, and past its own declared figure, which is the direction that
+# ends a load half way through rather than merely refusing one.
+#
+# The hand reading was not wrong so much as taken against a busier card: a
+# larger idle baseline subtracted from a similar total leaves a smaller
+# difference. A measurement is a subtraction, and both ends of it move.
+#
+# At 98304 it takes 28593, three times identically. 81920 would take 27889 and
+# buy nothing this needs. The weights are trained to 262144; what stops this
+# well short is the same arithmetic as before, only now with a number in it
+# that was measured properly.
+context_size = 98304
+# Measured 28593 MiB resident 2026-09-12 on an RTX 5090, by `model-router
+# bench`, three runs agreeing exactly. The margin is a hundredth rather than
+# this file's twentieth -- 30022 would be past the budget -- and 419 MiB is
+# what remains under it.
+memory_estimate_mib = 28928
 reasoning_format = "deepseek"
 
 [models.turbo38.flags]

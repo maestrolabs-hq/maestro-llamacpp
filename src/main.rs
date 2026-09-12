@@ -23,9 +23,10 @@ use maestro_llamacpp::idle::{IdleWindow, Limits};
 use maestro_llamacpp::launch::{Server, models_root};
 use maestro_llamacpp::proxy::Router;
 use maestro_llamacpp::queue::Wait;
-use maestro_llamacpp::startup;
+use maestro_llamacpp::{bench, startup};
 
 const USAGE: &str = "usage: model-router check <catalog>\n       \
+                     model-router bench <catalog> [model]\n       \
                      model-router launch <catalog> <model>\n       \
                      model-router serve <catalog> [address]";
 
@@ -38,6 +39,15 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [command, catalog] if command == "check" => check::check(Path::new(catalog)),
+        // Whole catalog or one entry. `check` reads the files and reasons; this
+        // starts each entry and reads the card, which is the only way to tell
+        // an estimate that is merely arithmetic from one that is true.
+        [command, catalog] if command == "bench" => {
+            report(bench::command(Path::new(catalog), None))
+        }
+        [command, catalog, id] if command == "bench" => {
+            report(bench::command(Path::new(catalog), Some(id)))
+        }
         [command, catalog, id] if command == "launch" => match launch(Path::new(catalog), id) {
             Ok(()) => ExitCode::SUCCESS,
             Err(complaint) => {

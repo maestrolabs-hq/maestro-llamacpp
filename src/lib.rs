@@ -15,6 +15,7 @@
 //! back through the same code the catalog derives from.
 
 pub mod admission;
+pub mod bench;
 pub mod catalog;
 pub mod gguf;
 pub mod idle;

@@ -33,6 +33,10 @@ mod server;
 
 pub use root::models_root;
 pub use server::Server;
+// Shared with `memory`, which locates the device tool the same way this
+// module locates the server binary: a second copy of the walk would be the
+// duplication the gate exists to refuse.
+pub(crate) use server::on_search_path;
 
 /// Why a server could not be located, started, or resolved.
 ///
@@ -98,6 +102,13 @@ impl Child {
     #[must_use]
     pub fn endpoint(&self) -> SocketAddr {
         self.address
+    }
+
+    /// The process identifier, which is how the machine is asked what this
+    /// child holds once it has loaded.
+    #[must_use]
+    pub fn pid(&self) -> u32 {
+        self.process.id()
     }
 
     /// Whether the process is still there.

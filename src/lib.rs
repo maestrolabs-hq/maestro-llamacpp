@@ -5,15 +5,17 @@
 //! -- the test target, which has to construct a catalog, assert on its fields,
 //! and drive a real child process through its lifetime.
 //!
-//! Six modules, and no more than the tests and the binary between them ask
+//! Seven modules, and no more than the tests and the binary between them ask
 //! for: a wider surface would be a promise to callers who do not exist.
 //! `startup` is here on exactly that bar -- the binary prints those lines and
 //! the tests read them, and a line composed inside a binary is one no test
-//! can reach.
+//! can reach. `memory` is here because a test states the figures a machine
+//! would report, and a probe it cannot build is a probe it cannot state.
 
 pub mod admission;
 pub mod catalog;
 pub mod idle;
 pub mod launch;
+pub mod memory;
 pub mod proxy;
 pub mod startup;

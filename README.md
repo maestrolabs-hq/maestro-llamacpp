@@ -76,15 +76,31 @@ time:
 | Source | Value |
 | --- | --- |
 | `MAESTRO_MEMORY_BUDGET_MIB` | the ceiling in mebibytes, when set and not empty |
-| otherwise | no budget, so nothing is ever unloaded |
+| otherwise, on a machine with a device `nvidia-smi` can see | the device's total less a tenth, and never less than 1024 MiB less |
+| otherwise, on a machine that reports its system memory | four fifths of it |
+| otherwise | no budget, so nothing is ever unloaded to make room |
 
 A budget is a fact about one machine's hardware, which is why it is read from
-the environment rather than written into a catalog: the catalog describes a set
-of models without naming the machine they sit on. A value that is not a whole
-number is refused rather than read as no budget at all, because the difference
-between those two is whether anything is ever evicted.
+the environment or from the machine rather than written into a catalog: the
+catalog describes a set of models without naming the machine they sit on. A
+value that is not a whole number is refused rather than read as unset, because
+the difference between those two is whether the ceiling is the one the operator
+meant.
 
-The router says which it found at startup.
+The router says which it found at startup, and when the machine set the
+ceiling, what it read to set it:
+
+```text
+memory budget: 29347 MiB, derived from the device (32607 MiB total less a 3260 MiB margin)
+```
+
+The margin is there because a device is never empty when a model loads: the
+display, the driver and whatever else the machine runs hold some of it. The
+ceiling is not the only check, either. Before a model is started the device is
+asked what it has free right now, which counts everything else on the machine,
+and a loaded model is measured once it is ready so that what it turned out to
+cost is what the budget counts from then on. Both are under
+[what eviction does](#what-eviction-does-and-what-it-never-does).
 
 ### How long unused memory may be held
 
@@ -185,10 +201,44 @@ the child ready.
 ### What eviction does, and what it never does
 
 With a budget set, a model that does not fit causes the coldest idle on-demand
-model to be unloaded first. The budget is a ceiling on the estimates written in
-the catalog, never on measured memory: a model that costs more than its
-estimate is admitted and then fails to load, and what protects against that is
-that a failed start names its entry, not that the estimate is right.
+model to be unloaded first. Two questions are asked before a model is started,
+and both have to say yes. The budget is a ceiling on what the loaded models
+cost, where each costs its catalog estimate until it has been measured and the
+larger of the two afterwards -- so a model that turns out to hold four times
+its estimate is counted at what it holds from the moment that is known, and
+the operator reads it on the line the load prints:
+
+```text
+qwen3-06b: loading, estimated at 1024 MiB
+qwen3-06b: ready in 5.4 s, measured 4.5 GiB resident and 0.7 GiB on the device (catalog said 1024 MiB)
+```
+
+The device is the second question, asked at the moment of the decision for
+what it has free right now. That counts everything on the machine, not only
+what this router loaded, so a desktop that grew since the budget was set is
+room the ledger still believes in and the device no longer has. The device can
+ask for more to be unloaded than the budget would, and refuses -- naming what
+was needed against what was free -- when unloading every idle model would
+still not make the room. A model whose flags keep every layer off the device
+is not held to the device's room, which is the one flag this router reads
+rather than passes through: the resident entry in the shipped catalog lives on
+the processor beside a large model that fills the device, and holding it to
+the device's room would refuse the arrangement it was measured in. Where the
+machine cannot be asked, the device question is not asked, and the budget
+decides alone.
+
+What neither question prevents is a model that costs more than both its
+estimate and the room the device reported, in the seconds between the decision
+and its load. That start fails, and what protects against it is that a failed
+start names its entry.
+
+Every load and every eviction is said out loud, so a swap is visible without
+watching the process table:
+
+```text
+gemma3: unloading qwen38 to make room
+gemma3: loading, estimated at 2048 MiB
+```
 
 A model is never unloaded while something is reading from it. Killing a child
 mid-answer would truncate the stream, which a caller cannot tell apart from a

@@ -320,11 +320,53 @@ pub fn windowed(
     limit_mib: Option<u32>,
     idle_window: Duration,
 ) -> Serving {
+    launched(
+        catalog,
+        root,
+        maestro_llamacpp::admission::Budget::new(limit_mib),
+        idle_window,
+    )
+}
+
+/// The same, under a stated memory budget, on a machine whose figures the
+/// test states.
+///
+/// What the device reports free and what every child measures as are
+/// injected rather than read, for the reason every other setting here is:
+/// a test that read the machine would assert about whichever machine it
+/// happened to run on.
+///
+/// # Panics
+///
+/// If the catalog is not usable or the port cannot be bound, which is a broken
+/// test rather than a failing one.
+#[must_use]
+pub fn probed(
+    catalog: &str,
+    root: ModelsRoot,
+    limit_mib: Option<u32>,
+    probe: maestro_llamacpp::memory::Probe,
+) -> Serving {
+    launched(
+        catalog,
+        root,
+        maestro_llamacpp::admission::Budget::with_probe(limit_mib, probe),
+        Duration::ZERO,
+    )
+}
+
+/// Binds a router with a budget already built, and starts serving it.
+fn launched(
+    catalog: &str,
+    root: ModelsRoot,
+    budget: maestro_llamacpp::admission::Budget,
+    idle_window: Duration,
+) -> Serving {
     let parsed = maestro_llamacpp::catalog::Catalog::parse(catalog).expect("a usable catalog");
     let server = maestro_llamacpp::launch::Server::located(Some(&stub_binary()))
         .expect("the stub binary is built by cargo test");
     let limits = maestro_llamacpp::idle::Limits::new(
-        maestro_llamacpp::admission::Budget::new(limit_mib),
+        budget,
         maestro_llamacpp::idle::IdleWindow::new(idle_window),
     );
     let router = maestro_llamacpp::proxy::Router::bind(

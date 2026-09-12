@@ -11,6 +11,7 @@ use std::sync::{Condvar, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use super::Shared;
+use super::slots::say;
 
 /// The floor under the derived sweep interval, in the sense decision 5 of the
 /// idle-unload plan states it: half the window, floored here rather than at a
@@ -97,11 +98,22 @@ pub(super) fn run(shared: &Weak<Shared>) {
         }
         deadline = Some(next);
 
+        // The dead first, so a child that exited is not also weighed as
+        // idle, and so its estimate stops counting before anything else
+        // this tick decides.
+        for (id, status) in strong.slots.sweep_exited(&strong.catalog) {
+            say(&format!(
+                "{id} exited on its own ({status}); its slot was emptied, and the \
+                 next request for it starts it again"
+            ));
+        }
         for id in strong
             .slots
             .sweep_idle(&strong.catalog, &strong.idle_window)
         {
-            println!("{id} unloaded after sitting idle past its configured window");
+            say(&format!(
+                "{id} unloaded after sitting idle past its configured window"
+            ));
         }
     }
 }

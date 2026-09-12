@@ -49,9 +49,13 @@ impl Slots {
     }
 
     /// What is loaded now, as admission needs to see it.
+    ///
+    /// Each entry is counted at its estimate or at what it was measured to
+    /// hold once loaded, whichever is more, so an under-estimated model is
+    /// accounted at its real cost from the moment it is known.
     pub(super) fn held(&self, catalog: &Catalog) -> Vec<Held> {
         self.snapshot(catalog, |entry, held| {
-            Held::of(entry, busy(&held.child), held.last_used)
+            Held::of(entry, busy(&held.child), held.last_used, &held.measured)
         })
     }
 }

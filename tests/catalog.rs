@@ -446,6 +446,13 @@ fn small_model() -> Gguf {
 
 const SMALL_MODEL_MIB: u32 = 1094;
 
+/// The device context and compute buffers, which no file records.
+///
+/// Intentional coupling to `estimate::OVERHEAD_BYTES`, as `CARD_MIB` is to
+/// this machine: an entry holding no layers on the device pays this and
+/// nothing else, so a test that means "nothing else" has to name the figure.
+const DEVICE_OVERHEAD_MIB: u32 = 1024;
+
 /// A catalog with one entry whose estimate is whatever the test says.
 fn one_entry(estimate: &str) -> String {
     format!(
@@ -528,6 +535,49 @@ fn a_reranking_entry_is_not_charged_a_cache_either() {
         generative - reranking >= 24,
         "a reranking entry must be costed like an embedding one: generative \
          {generative} MiB, reranking {reranking} MiB"
+    );
+}
+
+#[test]
+fn an_entry_pinned_to_the_processor_is_charged_none_of_its_weights() {
+    // `n-gpu-layers = 0` keeps every layer in host memory. The weights, the
+    // cache over them and the fragmentation between them are all paid by the
+    // processor, and what is left on the device is the context and the compute
+    // buffers alone -- which a resident holding no layers at all was still
+    // measured to pay, and which the overhead term already covers.
+    //
+    // Measured on this estate: qwen3-4b derived 9285 MiB against 811 MiB found
+    // on the device, and qwen3-06b 6145 against 795. Both are pinned, and both
+    // were saved only by a declared figure overriding the derivation. The next
+    // pinned entry added without one would be refused room it never wanted.
+    let scratch = Scratch::new("catalog-processor");
+    layered(None).write(&scratch.path().join("a/model.gguf"), 64 * MIB);
+
+    let on_device = Catalog::read(&one_entry(""), scratch.path())
+        .expect("derivable")
+        .catalog
+        .entry("alpha")
+        .expect("alpha")
+        .memory_estimate_mib;
+    let on_processor = Catalog::read(
+        &format!(
+            "{}\n[models.alpha.flags]\nn-gpu-layers = \"0\"\n",
+            one_entry("")
+        ),
+        scratch.path(),
+    )
+    .expect("derivable")
+    .catalog
+    .entry("alpha")
+    .expect("alpha")
+    .memory_estimate_mib;
+
+    assert_eq!(
+        on_processor, DEVICE_OVERHEAD_MIB,
+        "an entry whose every layer sits on the processor must be charged the \
+         device context and compute buffers and nothing else: got \
+         {on_processor} MiB, where the same file on the device costs \
+         {on_device} MiB"
     );
 }
 

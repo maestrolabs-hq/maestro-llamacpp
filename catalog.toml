@@ -757,3 +757,81 @@ reranking = "true"
 fa = "on"
 np = "1"
 kv-unified = "true"
+
+# The two speech entries, for maestro-voice. Neither is a llama.cpp model and
+# neither needed a line of Rust to serve, which is the point worth recording:
+# `runtime` names a build, the machine says where it is, and a shim on the
+# search path can present anything behind that name. `llama-server-whisper` and
+# `llama-server-tts` are those shims; they take the argument line every child
+# gets, read the four parts that mean something to them -- model, alias, host,
+# port -- and ignore the rest, including the flags table above and any flag a
+# future llama-server adds.
+#
+# They are here rather than started by the voice daemon so that speech is
+# admitted against the same budget as everything else. Two allocators with no
+# shared ledger is how this card gets over-committed.
+
+# Speech recognition: faster-whisper large-v3 on CTranslate2.
+#
+# The path names the model file because src/launch/server.rs will not spawn
+# anything whose path is not an existing regular file; CTranslate2 wants the
+# directory holding it, and the shim derives one from the other. It is a
+# symlink into the hub cache's blobs, which resolves and is checked.
+#
+# Language is detected per utterance rather than configured. The owner speaks
+# French and English and expects an answer in whichever was used, so the
+# detected language comes back with the text and the caller passes it on.
+[models.whisper]
+path = ".cache/huggingface/hub/models--Systran--faster-whisper-large-v3/snapshots/edaa852ec7e145841d8ffdb056a99866b5f0a478/model.bin"
+runtime = "whisper"
+# Measured 2026-09-12 on an RTX 5090: the device held 4283 MiB more with this
+# loaded than without it, unchanged while transcribing, and released all of it
+# on stop. A twentieth over, to a quarter gibibyte. Host memory is a further
+# 750 MiB resident, which is small because the weights are on the card.
+#
+# The router measures what a child actually holds once it has loaded and counts
+# the larger of that and this figure from then on, so a declaration that is a
+# little pessimistic costs headroom and nothing else.
+#
+# `check` notes that the files suggest 4705 MiB and this declares 4608. That is
+# the estimator reasoning from file size, which it has to do for a model it
+# cannot open: these are CTranslate2 weights, not a GGUF, so there is no header
+# for it to read and the size heuristic is all it has. The measurement is the
+# better number and is kept, as gemma3 above keeps its measured figure over the
+# estimator's.
+memory_estimate_mib = 4608
+# Loaded in 5.7 s idle and 11.4 s with the card contended, and readiness here
+# includes a warmup inference rather than only a constructor returning -- the
+# service reports 503 until it has genuinely transcribed something once. This
+# is generous against both.
+startup_timeout_seconds = 120
+
+# Speech synthesis: Chatterbox multilingual.
+#
+# Not Qwen3-TTS, and the reason is worth writing down rather than re-deriving.
+# The Qwen3-TTS on this estate is 12Hz-1.7B-Base, and a base model exposes only
+# `generate_voice_clone`: it refuses `generate_voice_design` and
+# `generate_custom_voice` outright and returns an empty supported-speaker list.
+# Voice cloning needs a reference recording and its transcript, and no
+# reference exists, so that entry could not have said a single word. Chatterbox
+# ships a built-in voice in `conds.pt` and needs no reference at all.
+#
+# It also picks its language per call, which one model doing both languages is
+# worth more than two entries competing for the same budget.
+#
+# Qwen3-TTS remains the better cloner and stays a future option: a second entry
+# on the day a cloned voice of the owner is wanted, with a reference WAV and its
+# transcript beside it. Not built, deliberately.
+[models.tts]
+path = ".cache/huggingface/hub/models--ResembleAI--chatterbox/snapshots/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18/t3_mtl23ls_v3.safetensors"
+runtime = "tts"
+# Measured 2026-09-12 on an RTX 5090: 3899 MiB on the device loaded, 3981 MiB
+# while generating, all of it released on stop. A twentieth over the working
+# figure, to a quarter gibibyte. Host memory is a further 3001 MiB resident,
+# which is much larger than the transcription entry's because this one keeps a
+# PyTorch process rather than a CTranslate2 one.
+memory_estimate_mib = 4352
+# Loaded in 15.9 s with the card contended, warmup generation included. Ten
+# times that, because a cold load on a busy card is not a cold load on an idle
+# one and this is the entry that keeps a person waiting to be answered.
+startup_timeout_seconds = 180

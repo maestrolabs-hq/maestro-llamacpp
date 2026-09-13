@@ -19,8 +19,8 @@ use std::net::TcpStream;
 use super::Shared;
 use super::reply;
 
-/// Every entry, with whether it is loaded, in the shape a llama.cpp client
-/// reads in router mode.
+/// Every entry that can hold a conversation, with whether it is loaded, in
+/// the shape a llama.cpp client reads in router mode.
 ///
 /// A client's whole test for "is this a router" is that each element carries
 /// a string `id` and a string `status.value`, so both are always present and
@@ -29,6 +29,14 @@ use super::reply;
 /// router has no third state -- it does not sleep a model or download one --
 /// and saying so plainly is better than inventing a word a client would have
 /// to guess at.
+///
+/// Entries that generate nothing are left out. A client reading this surface
+/// is choosing something to talk to, and its filter is `status`, `source` and
+/// `failed` -- none of which can say "this is not a chat model" without lying
+/// about one of them. An embedding server offered here is a selection that can
+/// only fail. `/v1/models` still carries them, because a caller wanting an
+/// embedding has to find it somewhere, and that surface is a catalogue rather
+/// than a menu.
 pub(super) fn catalogue(
     stream: &mut TcpStream,
     shared: &Shared,
@@ -40,6 +48,7 @@ pub(super) fn catalogue(
         .catalog
         .entries
         .iter()
+        .filter(|entry| entry.generates())
         .map(|entry| {
             let status = if loaded.contains(&entry.id) {
                 "loaded"
@@ -64,6 +73,13 @@ pub(super) fn catalogue(
                 // The window the entry was configured with, so a client sizes
                 // itself from the catalog rather than from its own default.
                 "meta": { "n_ctx": entry.context_size },
+                // What the entry can be sent. A client reads this and nothing
+                // else before deciding whether an image may go in the request,
+                // so an entry given a projector and not saying so is offered
+                // as though it were text-only. The catalog is what knows --
+                // it names the projector -- and reporting it here answers for
+                // every client rather than for one that was configured by hand.
+                "architecture": { "input_modalities": entry.accepts() },
             })
         })
         .collect();

@@ -139,3 +139,99 @@ fn an_entry_carries_the_context_it_was_configured_with() {
         "the context_size the catalog states for this entry"
     );
 }
+
+/// A catalog carrying one entry that generates and one that only embeds.
+///
+/// The projector is named but never read: the router reports what an entry is
+/// configured with, and `check` is the command that reads the files.
+const MIXED: &str = concat!(
+    "version = 1\n",
+    "\n[defaults]\n",
+    "context_size = 4096\n",
+    "residency = \"on-demand\"\n",
+    "memory_estimate_mib = 512\n",
+    "startup_timeout_seconds = 30\n",
+    "\n[models.gemma3]\n",
+    "path = \"cache/gemma/gemma-3-1b.gguf\"\n",
+    "projector_path = \"cache/gemma/mmproj.gguf\"\n",
+    "\n[models.embed]\n",
+    "path = \"cache/gemma/gemma-3-1b.gguf\"\n",
+    "[models.embed.flags]\n",
+    "embeddings = \"true\"\n",
+);
+
+#[test]
+fn an_entry_that_cannot_hold_a_conversation_is_not_offered_as_one() {
+    // A client reading this surface is choosing a model to talk to. An
+    // embedding server answers one forward pass and returns a vector; a
+    // reranker scores a pair. Offering either is offering a selection that can
+    // only fail, and the client has no field it reads that would let it tell.
+    //
+    // Its own filter is `status`, `source` and `failed` -- none of which can
+    // say "this is not a chat model" without lying about one of them. So the
+    // entry is left out of this surface rather than described wrongly on it.
+    // `/v1/models` still carries it, because a caller wanting an embedding
+    // needs to find it there.
+    let serving = serving(MIXED, ModelsRoot::with(&[MODEL]));
+    let reply = request(serving.address(), &get("/models"));
+
+    assert_eq!(status(&reply), Some(200), "got:\n{reply}");
+    let payload = body(&reply);
+    let ids: Vec<&str> = payload["data"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a 'data' array, got:\n{payload}"))
+        .iter()
+        .filter_map(|entry| entry["id"].as_str())
+        .collect();
+
+    assert_eq!(
+        ids,
+        vec!["gemma3"],
+        "only the entry that generates belongs on the router-mode surface"
+    );
+}
+
+#[test]
+fn an_entry_with_a_projector_says_it_takes_images() {
+    // The client reads `architecture.input_modalities` and nothing else to
+    // decide whether it may send an image. Left out, it assumes text, and a
+    // model that was given a projector is offered as though it had none.
+    //
+    // Reported here rather than configured in the client, because the catalog
+    // is the thing that knows: it names the projector. Any client reading this
+    // surface gets the answer, not just the one that happens to be configured.
+    let serving = serving(MIXED, ModelsRoot::with(&[MODEL]));
+    let payload = body(&request(serving.address(), &get("/models")));
+    let entry = payload["data"][0].clone();
+
+    assert_eq!(
+        entry["architecture"]["input_modalities"],
+        serde_json::json!(["text", "image"]),
+        "an entry naming a projector takes images: {entry}"
+    );
+}
+
+#[test]
+fn the_openai_listing_still_carries_what_the_router_surface_leaves_out() {
+    // The counterpart to the test above, and the reason leaving an entry out
+    // of one surface is not the same as hiding it. `/v1/models` is a
+    // catalogue: a caller wanting an embedding looks it up by name and has
+    // nowhere else to look. Filtering both would make the entry unreachable
+    // rather than unoffered.
+    let serving = serving(MIXED, ModelsRoot::with(&[MODEL]));
+    let payload = body(&request(serving.address(), &get("/v1/models")));
+    let mut ids: Vec<&str> = payload["data"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a 'data' array, got:\n{payload}"))
+        .iter()
+        .filter_map(|entry| entry["id"].as_str())
+        .collect();
+    ids.sort_unstable();
+
+    assert_eq!(
+        ids,
+        vec!["embed", "gemma3"],
+        "the OpenAI catalogue carries every entry, including the ones the \
+         router-mode menu does not offer"
+    );
+}

@@ -246,23 +246,32 @@ ctv = "q8_0"
 [models.qwen3-4b]
 path = "llm/qwen/qwen3-4b/Qwen3-4B-Q4_K_M.gguf"
 # 40960, the whole of what these weights were trained to, rather than the
-# 32768 the defaults table would have handed it. Like its 0.6B rival this is
-# pinned to the processor, so the extra cache is system memory and the device
-# figure below does not move.
+# 32768 the defaults table would have handed it.
 context_size = 40960
-# On-demand, not resident. Pinned to the processor with `n-gpu-layers = 0`,
-# so it holds 787 MiB of the device and roughly 7.4 GiB of system memory --
-# and the budget it is charged against is derived from the device. Resident,
-# it reserved a quarter of that budget and refused every 27B entry, for a
-# model that answers at ten tokens a second and loads in three.
+# On-demand, and now on the device with everything else.
+#
+# It was pinned to the processor, and the reason was real at the time: this
+# entry and its 0.6B rival were candidates for a *resident* steward, and a
+# resident reserves its estimate against the budget forever. On the card that
+# reservation was about 7.5 GiB, which refused every 27B entry outright -- a
+# quarter of the budget held back for a model that answers in a fraction of a
+# second.
+#
+# Neither of those conditions holds now. Both are on-demand, so nothing is
+# reserved when they are not running, and the budget is the whole card rather
+# than nine tenths of it. What the pinning bought was memory; what it cost was
+# speed, and on the processor that cost was severe -- 1.1 tokens a second
+# under load, against six figures of device bandwidth sitting idle beside it.
 residency = "on-demand"
-# Measured 811 MiB on the device, twice, by `model-router bench`. It shipped at
-# 4096, which was arithmetic over a 4B model's weights and true of a model on
-# the card -- this one is pinned to the processor, so the device sees only its
-# context and compute buffers. Over-declaring is the safe direction and it
-# still cost something: better than three gibibytes of budget reserved against
-# an entry that never wanted it.
-memory_estimate_mib = 1024
+# Measured 6225 MiB on the device by `model-router bench`; a twentieth over,
+# to a quarter gibibyte. The 1024 it carried before was true of a pinned
+# entry, where the card sees only the context and compute buffers; on the
+# device it holds its weights and its cache like anything else.
+#
+# What the 5201 MiB bought: 260.9 tokens a second against 1.1 on the
+# processor, and a 2.0 second load against 7.8. That is not a tuning
+# difference, it is a different machine.
+memory_estimate_mib = 6656
 
 [models.qwen3-4b.flags]
 # Qwen3's thinking figures, as on qwen3-06b and for the same reason: this file
@@ -274,14 +283,18 @@ temp = "0.6"
 top-k = "20"
 top-p = "0.95"
 min-p = "0"
-n-gpu-layers = "0"
 fa = "on"
 np = "1"
 kv-unified = "true"
+# 40960 tokens of cache at f16 is what made this expensive on the card in the
+# first place -- the weights are under 2.5 GiB and the cache was most of the
+# rest. Quantised, as every other entry that keeps one on the device is.
+ctk = "q8_0"
+ctv = "q8_0"
 
 # Qwen3 0.6B, the laptop-tier candidate for the steward role. Downloaded
 # 2026-09-03 from the official Qwen repository, SHA-256 verified against the
-# publisher's manifest. On the processor like its 4B rival, so the two are
+# publisher's manifest. On the device like its 4B rival, so the two are
 # measured under identical conditions; the steward correction journal will
 # decide between them on real rounds, not on file size.
 [models.qwen3-06b]
@@ -292,9 +305,6 @@ path = "llm/qwen/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf"
 # training ran out at 40960 and anything past that is rope scaling and a
 # quality question rather than a memory one.
 #
-# The extra cache costs nothing on the device. This entry is pinned to the
-# processor below, so its cache is system memory, and the estimate under it
-# is what it holds on the device -- which does not move.
 context_size = 40960
 # On demand, and nothing on this estate is resident -- which is a decision the
 # arithmetic makes rather than a preference.
@@ -309,8 +319,19 @@ context_size = 40960
 #
 # So the steward loads on demand like everything else. A load it pays for once
 # is worth more than a model it permanently locks out.
+#
+# That decision is also what lets it sit on the device now. The pinning it
+# carried existed to stop a resident reservation swallowing the budget; with
+# nothing reserved and the whole card available, the trade runs the other way
+# and the layers go where the arithmetic is.
 residency = "on-demand"
-memory_estimate_mib = 1024
+# Measured 3756 MiB on the device by `model-router bench`; a twentieth over,
+# to a quarter gibibyte. It holds its weights and its cache here rather than
+# the bare overhead a pinned entry pays.
+#
+# What the 2732 MiB bought: 474.6 tokens a second against 10.2 on the
+# processor, and a 1.3 second load against 6.5.
+memory_estimate_mib = 4096
 
 [models.qwen3-06b.flags]
 # Qwen3's thinking figures, which is the mode this actually runs in: asked a
@@ -322,15 +343,18 @@ temp = "0.6"
 top-k = "20"
 top-p = "0.95"
 min-p = "0"
-n-gpu-layers = "0"
 # The three its twin has had all along. qwen3-4b is the same weights class,
-# pinned the same way, for the same reason, and it carried these while this
-# one did not -- which was an omission rather than a distinction. None of them
-# costs the device anything here, the layers all being on the processor; they
-# are set so that the two entries differ only where they mean to.
+# served the same way, for the same reason, and it carried these while this
+# one did not -- an omission rather than a distinction. They are set so that
+# the two entries differ only where they mean to.
 fa = "on"
 np = "1"
 kv-unified = "true"
+# As on its twin, and for the same reason: at 40960 tokens the cache is the
+# larger half of what this costs the card, and no other entry that keeps one
+# on the device keeps it at f16.
+ctk = "q8_0"
+ctv = "q8_0"
 
 # Qwen3.8 27B, uncensored HauhauCS fine-tune. The one entry on this estate that
 # needs a patched server: its draft is a separate FastMTP sidecar, and the

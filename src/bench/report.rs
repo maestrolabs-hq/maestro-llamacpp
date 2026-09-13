@@ -48,7 +48,7 @@ pub fn command(path: &Path, only: Option<&str>) -> Result<(), String> {
 
     println!(
         "{:<20} {:>9} {:>9} {:>8} {:>10}",
-        "entry", "declared", "measured", "load", "tok/s"
+        "entry", "declared", "measured", "load", "rate"
     );
 
     let mut measured = Vec::new();
@@ -66,9 +66,13 @@ pub fn command(path: &Path, only: Option<&str>) -> Result<(), String> {
                         .measured_mib
                         .map_or_else(|| "--".to_owned(), |mib| mib.to_string()),
                     reading.load.as_secs_f64(),
-                    reading
-                        .tokens_per_second
-                        .map_or_else(|| "--".to_owned(), |rate| format!("{rate:.1}"))
+                    reading.throughput.map_or_else(
+                        || "--".to_owned(),
+                        |rate| {
+                            let (figure, unit) = rate.parts();
+                            format!("{figure:.1} {unit}")
+                        }
+                    )
                 );
                 measured.push(reading);
             }

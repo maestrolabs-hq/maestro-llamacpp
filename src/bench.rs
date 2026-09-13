@@ -20,34 +20,16 @@ mod report;
 
 pub use report::command;
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
+
+mod rate;
+
+pub use rate::Throughput;
 
 use crate::catalog::Entry;
 use crate::launch::{Failure, Server};
 use crate::memory::Probe;
-
-/// How long to wait for the measuring completion before giving up.
-///
-/// Generous because a large model on a cold page cache is slow, and this is a
-/// command someone runs deliberately rather than a request path.
-const REPLY_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// How many tokens to generate when measuring the rate.
-///
-/// Enough that the rate is not dominated by the first token, short enough that
-/// four large models are minutes rather than an afternoon.
-const TOKENS: u32 = 128;
-
-/// The prompt every entry is measured on.
-///
-/// Fixed so runs are comparable to each other. That makes them incomparable to
-/// anyone else's benchmark, which is the trade this takes deliberately:
-/// internal comparability is what decides a catalog number.
-const PROMPT: &str = "Write a short paragraph explaining what a memory budget \
-                      is and why a program might need one.";
 
 /// What one entry turned out to cost and do.
 #[derive(Debug, Clone)]
@@ -61,8 +43,8 @@ pub struct Measurement {
     pub measured_mib: Option<u32>,
     /// How long it took to answer its first health check.
     pub load: Duration,
-    /// Generated tokens per second, as reported by the server itself.
-    pub tokens_per_second: Option<f64>,
+    /// How fast it answered, in the unit it answers in.
+    pub throughput: Option<Throughput>,
 }
 
 impl Measurement {
@@ -135,7 +117,7 @@ pub fn entry(server: &Server, model: &Entry, root: &Path) -> Result<Measurement,
             after.checked_sub(before).filter(|grown| *grown > 0)
         })
         .and_then(|mib| u32::try_from(mib).ok());
-    let tokens_per_second = rate(child.endpoint(), &model.id);
+    let throughput = rate::of(child.endpoint(), model);
 
     // `child` is dropped here, which kills and reaps it. Nothing is left
     // holding the card for the next entry to be measured against.
@@ -144,65 +126,8 @@ pub fn entry(server: &Server, model: &Entry, root: &Path) -> Result<Measurement,
         declared_mib: model.memory_estimate_mib,
         measured_mib,
         load,
-        tokens_per_second,
+        throughput,
     })
-}
-
-/// Asks the server to generate, and reads the rate it reports.
-///
-/// The server's own number rather than one timed from out here. `llama-server`
-/// returns `timings.predicted_per_second` on every completion, measured across
-/// generation only; timing it from this side would fold in the connection, the
-/// prompt evaluation and this process's scheduling, and would disagree with
-/// every other figure anyone has for these models.
-///
-/// Returns `None` rather than an error: a rate that could not be read is worth
-/// less than the memory reading beside it, and losing both would be worse.
-fn rate(endpoint: std::net::SocketAddr, id: &str) -> Option<f64> {
-    let body = serde_json::json!({
-        "model": id,
-        "messages": [{ "role": "user", "content": PROMPT }],
-        "max_tokens": TOKENS,
-        "stream": false,
-        // Deterministic, so that a rate is not quietly measured against a
-        // different amount of work each run.
-        "temperature": 0.0,
-    })
-    .to_string();
-
-    let reply = ask(endpoint, &body).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(body_of(&reply)?).ok()?;
-    parsed.get("timings")?.get("predicted_per_second")?.as_f64()
-}
-
-/// One HTTP round trip, hand-written for the same reason the router's is.
-fn ask(endpoint: std::net::SocketAddr, body: &str) -> std::io::Result<String> {
-    let mut stream = TcpStream::connect(endpoint)?;
-    stream.set_read_timeout(Some(REPLY_TIMEOUT))?;
-
-    write!(
-        stream,
-        "POST /v1/chat/completions HTTP/1.1\r\n\
-         Host: {endpoint}\r\n\
-         Content-Type: application/json\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n\
-         {body}",
-        body.len()
-    )?;
-    stream.flush()?;
-
-    // `Connection: close` means end-of-file is the end of the reply, so the
-    // length header does not have to be honoured to know when to stop.
-    let mut reply = String::new();
-    stream.read_to_string(&mut reply)?;
-    Ok(reply)
-}
-
-/// Whatever followed the blank line.
-fn body_of(reply: &str) -> Option<&str> {
-    reply.split_once("\r\n\r\n").map(|(_, body)| body)
 }
 
 #[cfg(test)]
@@ -215,7 +140,7 @@ mod tests {
             declared_mib: 0,
             measured_mib: Some(mib),
             load: Duration::ZERO,
-            tokens_per_second: None,
+            throughput: None,
         }
     }
 

@@ -25,6 +25,28 @@ const CATALOG: &str = concat!(
     "path = \"cache/gemma/gemma-3-1b.gguf\"\n",
 );
 
+/// The identifiers one listing carries, sorted.
+///
+/// Both surfaces answer the same shape -- a `data` array whose elements carry
+/// an `id` -- and every test that asks which entries are offered asks it the
+/// same way. Sorted because each of those tests is comparing a set: the order
+/// entries come back in is the catalog's, and pinning it here would fail the
+/// day an entry is renamed rather than the day the offer changes.
+fn ids(address: std::net::SocketAddr, path: &str) -> Vec<String> {
+    let reply = request(address, &get(path));
+    assert_eq!(status(&reply), Some(200), "got:\n{reply}");
+
+    let payload = body(&reply);
+    let mut ids: Vec<String> = payload["data"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a 'data' array, got:\n{payload}"))
+        .iter()
+        .filter_map(|entry| entry["id"].as_str().map(str::to_owned))
+        .collect();
+    ids.sort();
+    ids
+}
+
 /// The JSON body of a reply, or a panic naming what arrived instead.
 fn body(reply: &str) -> Value {
     let body = reply.split_once("\r\n\r\n").map_or_else(
@@ -173,19 +195,9 @@ fn an_entry_that_cannot_hold_a_conversation_is_not_offered_as_one() {
     // `/v1/models` still carries it, because a caller wanting an embedding
     // needs to find it there.
     let serving = serving(MIXED, ModelsRoot::with(&[MODEL]));
-    let reply = request(serving.address(), &get("/models"));
-
-    assert_eq!(status(&reply), Some(200), "got:\n{reply}");
-    let payload = body(&reply);
-    let ids: Vec<&str> = payload["data"]
-        .as_array()
-        .unwrap_or_else(|| panic!("a 'data' array, got:\n{payload}"))
-        .iter()
-        .filter_map(|entry| entry["id"].as_str())
-        .collect();
 
     assert_eq!(
-        ids,
+        ids(serving.address(), "/models"),
         vec!["gemma3"],
         "only the entry that generates belongs on the router-mode surface"
     );
@@ -211,6 +223,62 @@ fn an_entry_with_a_projector_says_it_takes_images() {
     );
 }
 
+/// A catalog carrying an ordinary model beside the two speech services.
+///
+/// The speech entries are exactly the shipped ones in shape: a `runtime`
+/// naming the shim that serves them, and nothing else to say what they are.
+/// No flag distinguishes them, because the shim behind that name ignores the
+/// flags table entirely.
+const SPEECH: &str = concat!(
+    "version = 1\n",
+    "\n[defaults]\n",
+    "context_size = 4096\n",
+    "residency = \"on-demand\"\n",
+    "memory_estimate_mib = 512\n",
+    "startup_timeout_seconds = 30\n",
+    "\n[models.gemma3]\n",
+    "path = \"cache/gemma/gemma-3-1b.gguf\"\n",
+    "\n[models.whisper]\n",
+    "path = \"cache/gemma/gemma-3-1b.gguf\"\n",
+    "runtime = \"whisper\"\n",
+    "\n[models.tts]\n",
+    "path = \"cache/gemma/gemma-3-1b.gguf\"\n",
+    "runtime = \"tts\"\n",
+);
+
+#[test]
+fn a_speech_service_is_not_offered_as_something_to_talk_to() {
+    // Neither speech entry can hold a conversation. Transcription takes audio
+    // and answers once with the text of it; synthesis takes text and answers
+    // with a waveform. Neither has a chat endpoint at all.
+    //
+    // The client reading this surface filters on `status`, `source` and
+    // `failed`, and none of those can say "this is not a chat model" without
+    // lying about one of them -- the same reason the embedding entry is left
+    // out. Offered here, either one is a selection that can only fail, and the
+    // pi coding agent's own llama.cpp provider reads exactly this list.
+    //
+    // Both halves are asserted together because they are one decision: left
+    // off the menu, still in the catalogue. maestro-voice reaches each service
+    // at its own dedicated endpoint and has to find it by name somewhere, so
+    // filtering both surfaces would make them unreachable rather than
+    // unoffered.
+    let serving = serving(SPEECH, ModelsRoot::with(&[MODEL]));
+
+    assert_eq!(
+        ids(serving.address(), "/models"),
+        vec!["gemma3"],
+        "only the entry that can hold a conversation belongs on the \
+         router-mode surface"
+    );
+    assert_eq!(
+        ids(serving.address(), "/v1/models"),
+        vec!["gemma3", "tts", "whisper"],
+        "and every entry is still reachable by name, including the two the \
+         menu does not offer"
+    );
+}
+
 #[test]
 fn the_openai_listing_still_carries_what_the_router_surface_leaves_out() {
     // The counterpart to the test above, and the reason leaving an entry out
@@ -219,17 +287,9 @@ fn the_openai_listing_still_carries_what_the_router_surface_leaves_out() {
     // nowhere else to look. Filtering both would make the entry unreachable
     // rather than unoffered.
     let serving = serving(MIXED, ModelsRoot::with(&[MODEL]));
-    let payload = body(&request(serving.address(), &get("/v1/models")));
-    let mut ids: Vec<&str> = payload["data"]
-        .as_array()
-        .unwrap_or_else(|| panic!("a 'data' array, got:\n{payload}"))
-        .iter()
-        .filter_map(|entry| entry["id"].as_str())
-        .collect();
-    ids.sort_unstable();
 
     assert_eq!(
-        ids,
+        ids(serving.address(), "/v1/models"),
         vec!["embed", "gemma3"],
         "the OpenAI catalogue carries every entry, including the ones the \
          router-mode menu does not offer"

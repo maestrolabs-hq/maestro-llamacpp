@@ -80,6 +80,13 @@ Desktop.ini
 /audit.txt
 /audit.err
 
-# Agent and tool state.
+# ── Agent and tool state ────────────────────────────────────────────────────
+# Worktrees, skill checkouts and workspace scratch. Local to one machine and
+# one session, and carried here from the repositories that had already learned
+# to ignore them: a rule that exists in one repository and not the next is the
+# duplication this file exists to remove.
 .worktrees/
 .superpowers/
+/.maestro/cache/
+/.maestro/state/
+/.maestro/logs/

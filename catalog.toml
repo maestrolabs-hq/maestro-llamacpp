@@ -200,6 +200,18 @@ min-p = "0"
 fa = "on"
 np = "1"
 kv-unified = "true"
+# The last cache-keeping entry still on f16, and there was no reason for it
+# beyond never having been revisited. Gemma 3 windows five layers in six, so
+# the cache is small either way: this took the measurement from 1553 MiB to
+# 1486, which is 67 MiB and does not change what fits. It is set because
+# gemma4 runs the same architecture at q8_0 without complaint, and an estate
+# where one entry is costed on different rules from its neighbour is one where
+# the difference is an accident rather than a decision.
+#
+# The declared figure below is unchanged: a twentieth over 1486 is 1560, which
+# rounds up to the same quarter gibibyte it already sat at.
+ctk = "q8_0"
+ctv = "q8_0"
 
 # The resident entry. Held loaded so a caller that asks constantly never waits
 # for a load, which is the whole reason residency exists.
@@ -311,6 +323,14 @@ top-k = "20"
 top-p = "0.95"
 min-p = "0"
 n-gpu-layers = "0"
+# The three its twin has had all along. qwen3-4b is the same weights class,
+# pinned the same way, for the same reason, and it carried these while this
+# one did not -- which was an omission rather than a distinction. None of them
+# costs the device anything here, the layers all being on the processor; they
+# are set so that the two entries differ only where they mean to.
+fa = "on"
+np = "1"
+kv-unified = "true"
 
 # Qwen3.8 27B, uncensored HauhauCS fine-tune. The one entry on this estate that
 # needs a patched server: its draft is a separate FastMTP sidecar, and the

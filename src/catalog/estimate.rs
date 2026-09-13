@@ -28,6 +28,10 @@
 //!   buffers, which no file records and which a resident that holds no
 //!   layers on the device was still measured to pay.
 //!
+//! An entry that pins every layer to the processor (`n-gpu-layers = 0`) is
+//! charged the overhead and nothing else: the first three terms are all paid
+//! in host memory, and the budget being spent here is the device's.
+//!
 //! A file whose metadata cannot be read is estimated from its size alone: a
 //! quarter again on top, plus the overhead. It is rougher, and it is said.
 //!
@@ -35,15 +39,16 @@
 //! idle; one below it admits a model the machine cannot hold, which is the
 //! failure the budget exists to prevent.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::gguf::Metadata;
 
 mod cache;
+mod served;
 
 use cache::{cache_bytes, sixteenths};
+use served::{keeps_no_cache, predicts_tokens, runs_on_processor};
 
 use super::Entry;
 
@@ -110,7 +115,15 @@ pub(super) fn derive(entry: &Entry, root: &Path) -> Result<Derived, String> {
 
     let keys = sixteenths(&entry.flags, ["ctk", "cache-type-k"]);
     let values = sixteenths(&entry.flags, ["ctv", "cache-type-v"]);
-    let weights = u128::from(weights);
+    // Layers pinned to the processor are held in host memory, so every term
+    // that scales with them -- the weights, the cache over them, and the
+    // fragmentation between them -- is paid there rather than here. Zeroing
+    // the weights collapses the fragmentation with them in either arm below,
+    // and the overhead is left standing on its own, which is what such an
+    // entry was measured to cost.
+    let on_processor = runs_on_processor(&entry.flags);
+    let cache = if on_processor { 0 } else { cache };
+    let weights = if on_processor { 0 } else { u128::from(weights) };
     let (bytes, basis) = match metadata
         .ok()
         .and_then(|metadata| cache_bytes(&metadata, entry.context_size, keys, values))
@@ -122,7 +135,7 @@ pub(super) fn derive(entry: &Entry, root: &Path) -> Result<Derived, String> {
         // though nothing had been read.
         Some(model_cache) => (
             weights
-                + if keeps_no_cache(&entry.flags) {
+                + if keeps_no_cache(&entry.flags) || on_processor {
                     0
                 } else {
                     model_cache
@@ -139,43 +152,6 @@ pub(super) fn derive(entry: &Entry, root: &Path) -> Result<Derived, String> {
     };
     let mib = u32::try_from(bytes.div_ceil(u128::from(MIB))).unwrap_or(u32::MAX);
     Ok(Derived { mib, basis })
-}
-
-/// Whether the entry is served in a way that keeps no key-value cache.
-///
-/// A server started with `embeddings` answers one forward pass at a time and
-/// keeps nothing between them; one started with `reranking` scores a query
-/// against a passage and forgets both. Neither has a conversation to remember,
-/// so the cache a generative entry holds for the length of a session is never
-/// allocated -- and the context size, which for those entries is the largest
-/// term in the sum, here only bounds how long one passage may be.
-///
-/// Read from the flags the server itself keys on, as `predicts_tokens` beside
-/// it reads `spec-type`. Both answer the same shape of question: the file says
-/// what a model *could* cost, and the flags say what this way of running it
-/// actually will.
-///
-/// Measured on this estate: bge-m3 at a context of 8192 derived 2428 MiB
-/// against the 880 MiB it was found to hold, and the whole of that gap was a
-/// cache the child never asked the device for.
-fn keeps_no_cache(flags: &BTreeMap<String, String>) -> bool {
-    ["embeddings", "embedding", "reranking", "rerank"]
-        .iter()
-        .find_map(|name| flags.get(*name))
-        .is_some_and(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "false" | "0"))
-}
-
-/// Whether the draft is a prediction head rather than a model of its own.
-///
-/// Read from `spec-type`, which is what the server itself keys on, rather than
-/// guessed from the draft's size or its layer count -- both of which a sidecar
-/// reports as its parent's. An independent draft model, which does keep its
-/// own cache, says nothing here and is sized normally.
-fn predicts_tokens(flags: &BTreeMap<String, String>) -> bool {
-    ["spec-type", "speculative-type"]
-        .iter()
-        .find_map(|name| flags.get(*name))
-        .is_some_and(|spelling| spelling.trim().to_ascii_lowercase().contains("mtp"))
 }
 
 /// The size of the model file, plus every other shard when it is split.
@@ -261,32 +237,5 @@ mod tests {
         assert_eq!(shard_of("model.gguf"), None, "no suffix");
         assert_eq!(shard_of("model-1-of-x.gguf"), None, "not digits");
         assert_eq!(shard_of("model-1-of-04.gguf"), None, "widths differ");
-    }
-
-    #[test]
-    fn a_multiple_token_prediction_draft_is_a_head_not_a_model() {
-        let mut flags = BTreeMap::new();
-        assert!(
-            !predicts_tokens(&flags),
-            "an entry that asks for nothing keeps a draft cache, because an \
-             independent draft model does have one"
-        );
-
-        flags.insert("spec-type".to_owned(), "draft-mtp".to_owned());
-        assert!(
-            predicts_tokens(&flags),
-            "the server keys on spec-type, so this does too -- a sidecar's own \
-             metadata cannot be trusted for it, since it reports the parent's \
-             layer count"
-        );
-
-        flags.insert("spec-type".to_owned(), "  DRAFT-MTP ".to_owned());
-        assert!(predicts_tokens(&flags), "read as the flags are elsewhere");
-
-        flags.insert("spec-type".to_owned(), "draft".to_owned());
-        assert!(
-            !predicts_tokens(&flags),
-            "a plain draft is a model of its own and keeps its own cache"
-        );
     }
 }

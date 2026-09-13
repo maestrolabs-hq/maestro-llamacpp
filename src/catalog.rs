@@ -19,6 +19,7 @@
 //! An error reading "invalid catalog" sends the reader back to the file to
 //! guess, which is the failure this design exists to avoid.
 
+mod capability;
 mod discover;
 mod estimate;
 mod field;

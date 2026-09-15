@@ -32,10 +32,17 @@ which is which is the point of writing them down.
 | Drift from the baseline | zero, continuously | yes, weekly |
 | Gates proved by injection | every gate | by hand, at the time |
 | Restore on a clean machine | one command, no manual steps | no |
-| Decisions with a recorded ADR | every decision that would be re-derived | no |
+| Decisions with a recorded ADR | every decision that would be re-derived | four recorded, no count of what is not |
 
 The gap between the first column and the third is the honest state of this
 estate. Closing it is the work; pretending it is closed is the failure.
+
+The ADR row is the one that moved, and it moved by four: one crate, an
+operator's unload, estimates being measured, and what `n_ctx` counts. It still
+says "no count of what is not" rather than "yes", because nobody has gone
+through the repository asking which decisions a reader would otherwise have to
+re-derive. Until somebody does, the denominator is unknown and a fraction with
+an unknown denominator is not a measurement.
 
 ## What this is not
 

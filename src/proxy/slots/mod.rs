@@ -200,6 +200,21 @@ impl Slots {
     /// again, which is the price of not silently overcommitting. Naming the
     /// blocker is what lets the refusal say which model is holding the room,
     /// rather than only that something is.
+    /// Give one slot up, for an operator asking for the room directly rather
+    /// than as a side effect of needing it.
+    ///
+    /// The taking itself is [`Slots::unload`]: the same idle condition, the
+    /// same re-read of the busy signal, the same refusal. Only the reason for
+    /// asking is new -- see ADR 0002.
+    ///
+    /// # Errors
+    ///
+    /// Returns the entry when something is reading from it.
+    pub(in super::super) fn give_up(&self, id: &str) -> Result<(), String> {
+        let one = [id.to_owned()];
+        self.unload(&one).map_err(str::to_owned)
+    }
+
     fn unload<'a>(&self, ids: &'a [String]) -> Result<(), &'a str> {
         for id in ids {
             match take_if_idle(self.slot(id), |_| true) {

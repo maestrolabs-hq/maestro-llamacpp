@@ -112,6 +112,16 @@ const ACCEPTED: &[(&str, &str)] = &[
          what makes either of them readable.",
     ),
     (
+        "get <-> delete",
+        "What these shared was factored out: both call `bodyless`, and what \
+         remains is a name and a verb each. The gate still matches them \
+         because a one-line delegation looks like any other, which is the \
+         shape rather than the duplication. Collapsing them further means the \
+         helper taking the method, and every one of the thirty-odd call sites \
+         spelling `GET` as an argument to say the thing its name already \
+         says.",
+    ),
+    (
         "listening <-> wait_for_listener",
         "The delegation family again: wait_for_listener is listening plus the \
          refusal, and calls it. Both exist because the stub's readiness has \

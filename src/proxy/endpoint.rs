@@ -46,6 +46,9 @@ pub(super) enum Endpoint {
     /// `/props`: what the server itself does, which is how a client decides
     /// whether it is talking to a router at all.
     Properties,
+    /// `/models/<id>`: the entry itself rather than something under it. What
+    /// can be asked of it is whether it is resident -- see ADR 0002.
+    Residency { id: String },
 }
 
 impl Endpoint {
@@ -69,10 +72,18 @@ impl Endpoint {
         }
 
         if let Some(rest) = path.strip_prefix(DEDICATED) {
+            let named = rest.trim_end_matches('/');
             return match rest.split_once('/') {
                 Some((id, suffix)) if !id.is_empty() && !suffix.is_empty() => Ok(Self::Dedicated {
                     id: id.to_owned(),
                     suffix: format!("/{suffix}"),
+                }),
+                // `/models/<id>`, with or without a trailing slash: the entry
+                // and nothing under it. This was a refusal until residency
+                // became something an operator could ask about, which is why
+                // the spelling was free to take.
+                _ if !named.is_empty() && !named.contains('/') => Ok(Self::Residency {
+                    id: named.to_owned(),
                 }),
                 _ => Err(malformed(&format!(
                     "'{path}' names a model with nothing after it: the shape \
@@ -106,10 +117,12 @@ impl Endpoint {
     /// The methods this endpoint answers, as an `Allow` header says them.
     ///
     /// A model is asked something with `POST`, and asked about itself with
-    /// `GET`; the listing is read, and `HEAD` reads its head. Everything
-    /// else is refused before a child is involved, because the only thing a
-    /// stray `DELETE` under a model prefix could do is start a model that
-    /// then answers 404, which is a load nobody asked for.
+    /// `GET`; the listing is read, and `HEAD` reads its head. A `DELETE`
+    /// under a model prefix is refused for the reason it always was -- the
+    /// only thing it could do there is start a model that then answers 404,
+    /// which is a load nobody asked for. It means something only at the one
+    /// path that names an entry and nothing under it, where it can be
+    /// answered without starting anything.
     pub(super) fn allowed(&self) -> &'static str {
         match self {
             // The three the router answers out of its own catalog. Nothing is
@@ -117,6 +130,7 @@ impl Endpoint {
             // read-only set.
             Self::Listing | Self::Catalogue | Self::Properties => "GET, HEAD, OPTIONS",
             Self::Dedicated { .. } | Self::Generic { .. } => "GET, POST, OPTIONS",
+            Self::Residency { .. } => "DELETE, OPTIONS",
         }
     }
 
@@ -137,7 +151,10 @@ impl Endpoint {
             // its own path rather than an empty string so the value is honest
             // if anything ever reads it.
             Self::Listing => LISTING,
-            Self::Catalogue => CATALOGUE,
+            // Residency shares the catalogue's prefix because the honest
+            // answer, `/models/<id>`, is not a static string -- and like the
+            // three above it, this is never what a child is asked for.
+            Self::Catalogue | Self::Residency { .. } => CATALOGUE,
             Self::Properties => PROPERTIES,
         }
     }
@@ -214,16 +231,42 @@ mod tests {
         );
     }
 
+    /// This path was a refusal until ADR 0002 gave it a meaning: an identifier
+    /// with nothing after it names the entry itself, and residency is what can
+    /// be asked of it. A trailing slash is the same request.
     #[test]
-    fn a_models_path_with_nothing_after_the_identifier_is_refused() {
+    fn a_models_path_with_nothing_after_the_identifier_names_the_entry_itself() {
         for path in ["/models/gemma3", "/models/gemma3/"] {
-            let refusal = Endpoint::of(path)
-                .expect_err("an identifier with nothing after it asks for nothing");
-            assert!(
-                refusal.to_string().contains("gemma3"),
-                "the refusal names what was asked for: {refusal}"
+            assert_eq!(
+                Endpoint::of(path).expect("the entry itself"),
+                Endpoint::Residency {
+                    id: "gemma3".to_owned()
+                },
+                "'{path}' names the entry and nothing under it"
             );
         }
+        assert_eq!(
+            Endpoint::Residency {
+                id: "gemma3".to_owned()
+            }
+            .allowed(),
+            "DELETE, OPTIONS",
+            "and the only thing it answers is being given up: a GET here would \
+             be the catalogue's job, and a POST a load nobody asked for"
+        );
+    }
+
+    /// `/models//` is not here: trailing slashes are trimmed before this and
+    /// it reads as the catalogue, which it did before residency existed.
+    #[test]
+    fn a_models_path_naming_no_entry_at_all_is_still_refused() {
+        let refusal =
+            Endpoint::of("/models//v1/echo").expect_err("an empty identifier asks for nothing");
+
+        assert!(
+            refusal.to_string().contains(DEDICATED),
+            "the refusal names the shape it wanted: {refusal}"
+        );
     }
 
     #[test]

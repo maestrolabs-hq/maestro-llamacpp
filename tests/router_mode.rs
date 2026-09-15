@@ -11,7 +11,7 @@
 use serde_json::Value;
 
 mod support;
-use support::{MODEL, ModelsRoot, get, request, serving, status};
+use support::{MODEL, ModelsRoot, delete, get, request, serving, status};
 
 /// Two entries, so a catalogue has something to distinguish.
 const CATALOG: &str = concat!(
@@ -67,6 +67,63 @@ fn the_catalogue_carries_an_id_and_a_status_for_every_entry() {
         data[0]["status"]["value"], "unloaded",
         "nothing has been asked for, so nothing is loaded -- and listing what \
          could be served is not a reason to start serving it"
+    );
+}
+
+/// The failure this catches: freeing the card meant waiting out the idle
+/// window, or stopping the router and taking every other entry with it.
+///
+/// Benching `heretic38` cost 720 seconds of waiting for `gemma4` to age out of
+/// a card nobody was reading from. The machinery to take an idle slot already
+/// existed and only admission could reach it. See ADR 0002.
+#[test]
+fn an_operator_can_take_back_a_slot_nobody_is_reading_from() {
+    let serving = serving(CATALOG, ModelsRoot::with(&[MODEL]));
+
+    request(serving.address(), &get("/models/gemma3/v1/echo"));
+    let loaded = body(&request(serving.address(), &get("/models")));
+    assert_eq!(
+        loaded["data"][0]["status"]["value"], "loaded",
+        "the request above started it:\n{loaded}"
+    );
+
+    let reply = request(serving.address(), &delete("/models/gemma3"));
+    assert_eq!(status(&reply), Some(200), "got:\n{reply}");
+
+    let after = body(&request(serving.address(), &get("/models")));
+    assert_eq!(
+        after["data"][0]["status"]["value"], "unloaded",
+        "the slot was given up without stopping anything else:\n{after}"
+    );
+}
+
+#[test]
+fn unloading_an_entry_that_is_already_gone_is_the_room_the_caller_asked_for() {
+    let serving = serving(CATALOG, ModelsRoot::with(&[MODEL]));
+
+    let reply = request(serving.address(), &delete("/models/gemma3"));
+
+    assert_eq!(
+        status(&reply),
+        Some(200),
+        "nothing was loaded, so the room is already there and saying so twice \
+         is not an error:\n{reply}"
+    );
+}
+
+#[test]
+fn unloading_an_entry_the_catalog_does_not_carry_is_not_found() {
+    let serving = serving(CATALOG, ModelsRoot::with(&[MODEL]));
+
+    let reply = request(serving.address(), &delete("/models/not-an-entry"));
+
+    assert_eq!(status(&reply), Some(404), "got:\n{reply}");
+    // Both refusals are 404, and before this endpoint existed the path itself
+    // was the one that fired. Naming the code is what tells them apart: the
+    // shape is served now, and it is the entry that is missing.
+    assert!(
+        body(&reply)["error"]["code"] == "model_not_found",
+        "the entry is missing, not the path shape:\n{reply}"
     );
 }
 

@@ -417,11 +417,14 @@ reasoning-preserve = "true"
 path = "llm/qwen/qwen3.8-27b-heretic-0bserverx/RVN-Q5_K_M-multilingual-mtp.gguf"
 projector_path = "llm/qwen/qwen3.8-27b-heretic-0bserverx/mmproj-Qwen3.8-27B-Q8_0.gguf"
 context_size = 131072
-# Provisional until `model-router bench` measures it: qwen38-uncensored, the
-# same size class at the same context, held 26944 MiB at Q5_K_P; this is
-# Q5_K_M (a little lighter) with the MTP head embedded (about 1166 MiB more,
-# measured as the gap between qwen38 and turbo38), which lands near 27800.
-memory_estimate_mib = 28160
+# Measured 25729 MiB resident 2026-09-15 on an RTX 5090, loading in 26.3 s
+# and generating at 110.1 tok/s: a twentieth over, to a quarter gibibyte.
+#
+# The derivation this replaces reasoned from qwen38-uncensored at 26944 MiB
+# and the 1166 MiB an embedded draft head costs elsewhere in the family, and
+# landed near 27800 -- 2431 MiB above what the card actually held. The parts
+# were each measured; the sum was not, and that is the whole of the error.
+memory_estimate_mib = 27136
 reasoning_format = "deepseek"
 
 [models.heretic38.flags]

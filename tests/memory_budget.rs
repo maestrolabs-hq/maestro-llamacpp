@@ -13,7 +13,7 @@
 //! does not end up with no budget.
 
 use maestro_llamacpp::admission::Budget;
-use maestro_llamacpp::memory::Probe;
+use maestro_llamacpp::memory::{Fixed, Probe};
 
 const VARIABLE: &str = "MAESTRO_MEMORY_BUDGET_MIB";
 
@@ -39,9 +39,23 @@ fn the_budget_comes_from_the_environment_and_from_the_machine_when_unset() {
         "the variable is used as given"
     );
 
-    let machine = Budget::derived(Probe::detect());
-    let answers =
-        Probe::detect().device().is_some() || Probe::detect().system_total_mib().is_some();
+    // One reading of the machine, held still. `Probe::detect` finds the tools
+    // once, but `device` and `system_total_mib` run them on every call, so
+    // three detections asked three times and compared whatever came back. A
+    // tool that is missing, hangs, or is killed under load answers `None`
+    // rather than failing -- the degradation this module is built around --
+    // and two answers that differ derive two different budgets. Freezing what
+    // the machine said into a `Fixed` leaves the assertions below comparing
+    // figures rather than moments.
+    let detected = Probe::detect();
+    let device = detected.device();
+    let system_total_mib = detected.system_total_mib();
+    let answers = device.is_some() || system_total_mib.is_some();
+    let machine = Budget::derived(Probe::Fixed(Fixed {
+        device,
+        system_total_mib,
+        ..Fixed::default()
+    }));
 
     unsafe { std::env::set_var(VARIABLE, "") };
     assert_eq!(
@@ -64,11 +78,31 @@ fn the_budget_comes_from_the_environment_and_from_the_machine_when_unset() {
     );
 
     unsafe { std::env::remove_var(VARIABLE) };
-    let unset = Budget::configured().expect("an unset budget is not an error");
+
+    // `Budget::configured` asks the machine again, inside the library, and
+    // nothing here can hand it the reading held above: a second reading is
+    // unavoidable, so this is the one assertion that spans two of them. Where
+    // the machine answered the same way twice -- which is what `source`
+    // records -- the budgets must match, and that is asserted as strictly as
+    // before. Where it did not, the machine changed its mind between two
+    // calls rather than the budget being wrong, so it is asked again. A
+    // disagreement that is real survives being asked five times; a tool
+    // starved of CPU for a moment does not.
+    let mut unset = Budget::configured().expect("an unset budget is not an error");
+    for _ in 0..4 {
+        if unset.source() == machine.source() {
+            break;
+        }
+        unset = Budget::configured().expect("an unset budget is not an error");
+    }
+
     assert_eq!(
         unset.limit_mib(),
         machine.limit_mib(),
-        "unset means the budget the machine sets for itself"
+        "unset means the budget the machine sets for itself; asked directly \
+         the machine said '{}', and through the unset variable '{}'",
+        machine.source(),
+        unset.source()
     );
     assert_eq!(
         unset.limit_mib().is_some(),

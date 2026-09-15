@@ -43,6 +43,8 @@ pub(super) fn catalogue(
     head_only: bool,
 ) -> std::io::Result<()> {
     let loaded = shared.slots.loaded(&shared.catalog);
+    let held: std::collections::HashMap<String, Option<u64>> =
+        shared.slots.memory(&shared.catalog).into_iter().collect();
 
     let data: Vec<serde_json::Value> = shared
         .catalog
@@ -80,6 +82,19 @@ pub(super) fn catalogue(
                 // it names the projector -- and reporting it here answers for
                 // every client rather than for one that was configured by hand.
                 "architecture": { "input_modalities": entry.accepts() },
+                // What the entry was estimated to hold, and what it was
+                // measured holding once it was loaded. Admission compares the
+                // first against the budget; the second is what the card said
+                // the child actually took. They are reported together because
+                // an estimate only drifts visibly when both are in one place,
+                // and until now the only place was a line on a stdout the
+                // service sends to /dev/null. `held_mib` is null for an entry
+                // that is not loaded, and for one whose card could not be
+                // read -- neither of which is a measurement of nothing.
+                "memory": {
+                    "declared_mib": entry.memory_estimate_mib,
+                    "held_mib": held.get(&entry.id).copied().flatten(),
+                },
             })
         })
         .collect();

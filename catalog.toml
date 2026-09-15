@@ -398,6 +398,54 @@ load-mode = "mmap"
 image-min-tokens = "1024"
 reasoning-preserve = "true"
 
+# Qwen3.8 27B Heretic RVN, a two-pass ARA abliteration by 0bserverx over
+# trohrbaugh's heretic-ara, on the same base as qwen38-uncensored. The MTP draft
+# head is embedded in the -mtp weights, so this runs on the stock server like
+# turbo38 rather than on the patched fastmtp build qwen38-uncensored needs.
+#
+# Downloaded 2026-09-14 via `hf download` from 0bserverx/Qwen3.8-27B-Heretic-
+# Abliterated-Uncensored-GGUF; the multilingual calibration family is the
+# publisher's recommendation for new deployments. The publisher publishes no
+# SHA-256 manifest, so the file hashes are recorded here rather than checked
+# against one:
+#
+#   RVN-Q5_K_M-multilingual-mtp.gguf
+#   ea26b22990fbb436d3192663fd50b5009385d2d01f86a049003f21c1badeb6a4
+#   mmproj-Qwen3.8-27B-Q8_0.gguf
+#   2e968a6af97ce35d8971890b257b9b7edabf20ad91450501fa53162a19ee33eb
+[models.heretic38]
+path = "llm/qwen/qwen3.8-27b-heretic-0bserverx/RVN-Q5_K_M-multilingual-mtp.gguf"
+projector_path = "llm/qwen/qwen3.8-27b-heretic-0bserverx/mmproj-Qwen3.8-27B-Q8_0.gguf"
+context_size = 131072
+# Provisional until `model-router bench` measures it: qwen38-uncensored, the
+# same size class at the same context, held 26944 MiB at Q5_K_P; this is
+# Q5_K_M (a little lighter) with the MTP head embedded (about 1166 MiB more,
+# measured as the gap between qwen38 and turbo38), which lands near 27800.
+memory_estimate_mib = 28160
+reasoning_format = "deepseek"
+
+[models.heretic38.flags]
+# Qwen's recommended sampling, as set out on qwen38.
+temp = "0.6"
+top-k = "20"
+top-p = "0.95"
+min-p = "0"
+ctk = "q8_0"
+ctv = "q8_0"
+fa = "on"
+np = "1"
+kv-unified = "true"
+n-gpu-layers-draft = "999"
+spec-type = "draft-mtp"
+spec-draft-n-max = "3"
+spec-draft-p-min = "0"
+batch-size = "2048"
+ubatch-size = "512"
+split-mode = "none"
+load-mode = "mmap"
+image-min-tokens = "1024"
+reasoning-preserve = "true"
+
 # DavidAU's TURBO Fable Cold Fusion, a multi-stage tune and merge over the same
 # Qwen 3.8 27B everything else in this family sits on. Architecturally it is
 # the stock model: qwen35, 65 blocks, full_attention_interval of 4, 24 heads
@@ -701,7 +749,8 @@ context_size = 8192
 # found the estimator charging every embedding entry a cache it never keeps --
 # fixed in `embeds_only`, which took the derivation from 2428 to 1660. What
 # remains above the measurement is the fixed overhead every entry carries.
-memory_estimate_mib = 1024
+# 2026-09-14, batches 8192: bench 1167 MiB; sampled device delta 1169 MiB.
+memory_estimate_mib = 1280
 
 [models.embed.flags]
 # `embeddings` is what makes this an embedding server, and it is exclusive:
@@ -714,6 +763,9 @@ embeddings = "true"
 # which is why the entry was checked against known-related text rather than
 # only for a 200.
 pooling = "cls"
+# Encoder sequences must fit a physical batch; the default 512 rejects long docs.
+batch-size = "8192"
+ubatch-size = "8192"
 fa = "on"
 np = "1"
 kv-unified = "true"
@@ -746,7 +798,8 @@ context_size = 8192
 # Measured 890 MiB resident 2026-09-12 on an RTX 5090, scoring pairs: a
 # twentieth over, to a quarter gibibyte. Within ten MiB of the embedder beside
 # it, which is what two 600 MB files that keep no cache should cost.
-memory_estimate_mib = 1024
+# 2026-09-14, batches 8192: bench 1171 MiB; sampled device delta 1176 MiB.
+memory_estimate_mib = 1280
 
 [models.rerank.flags]
 # `reranking` turns on the /v1/rerank endpoint and, like `embeddings` on the
@@ -754,6 +807,9 @@ memory_estimate_mib = 1024
 # Both flags exempt an entry from the cache term in the estimate, because
 # neither way of running a model keeps one.
 reranking = "true"
+# Query and document must fit one encoder batch, just like embeddings above.
+batch-size = "8192"
+ubatch-size = "8192"
 fa = "on"
 np = "1"
 kv-unified = "true"

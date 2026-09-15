@@ -12,6 +12,7 @@ use std::path::Path;
 use super::Measurement;
 use crate::catalog::Catalog;
 use crate::launch::{Server, models_root};
+use crate::memory::Probe;
 
 /// Loads each entry in turn, measures it, and prints what it found.
 ///
@@ -24,8 +25,9 @@ use crate::launch::{Server, models_root};
 ///
 /// Returns a complaint when the catalog cannot be read or parsed, when there
 /// is nowhere to resolve its locations against, when no server binary can be
-/// found, or when a requested entry is not in the catalog. A single entry
-/// that fails to load is reported in its row and does not stop the rest.
+/// found, when a requested entry is not in the catalog, or when the card has
+/// less free than the next entry declares. A single entry that fails to *load*
+/// is reported in its row and does not stop the rest.
 pub fn command(path: &Path, only: Option<&str>) -> Result<(), String> {
     let text =
         fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -53,6 +55,20 @@ pub fn command(path: &Path, only: Option<&str>) -> Result<(), String> {
 
     let mut measured = Vec::new();
     for entry in wanted {
+        // Asked for each entry rather than once, because this command's own
+        // loads and unloads move the card between rows -- and because the
+        // thing being guarded against, a router loading beside this, can
+        // start at any point in the run.
+        //
+        // A refusal stops the run rather than marking the row. A full card is
+        // a fact about the machine, not a property of the entry: every row
+        // after it would measure the same wrong thing.
+        super::room_for(
+            &entry.id,
+            entry.memory_estimate_mib,
+            Probe::detect().device().as_ref(),
+        )?;
+
         // Printed before the load, because a large model is minutes and a
         // silent terminal looks like a hang.
         print!("{:<20} {:>9} ", entry.id, entry.memory_estimate_mib);

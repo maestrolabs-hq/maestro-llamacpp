@@ -29,7 +29,44 @@ pub use rate::Throughput;
 
 use crate::catalog::Entry;
 use crate::launch::{Failure, Server};
-use crate::memory::Probe;
+use crate::memory::{DeviceMemory, Probe};
+
+/// Whether the card has room to measure this entry honestly.
+///
+/// Benching spawns its own server and is not the router's child, so a card
+/// already holding the router's models has two allocators on it. That costs
+/// more than a failed load. The fallback measurement in [`entry`] is the
+/// difference in device use across the load, and it is sound only while one
+/// entry loads at a time: with another model moving underneath, the same
+/// subtraction attributes one model's pages to another and reports a number
+/// that looks entirely reasonable.
+///
+/// So this refuses rather than competes, and says what it would have needed.
+///
+/// A card that cannot be read is not a refusal. It is the WSL2 case, where
+/// the driver reports no compute apps and the measurement falls back to the
+/// difference anyway; there is nothing to compare against and guessing would
+/// block a bench that would have worked.
+///
+/// # Errors
+///
+/// Returns the refusal, naming what is free and what the entry declared.
+pub fn room_for(id: &str, declared_mib: u32, device: Option<&DeviceMemory>) -> Result<(), String> {
+    let Some(device) = device else {
+        return Ok(());
+    };
+    let free = device.free_mib();
+    if free >= u64::from(declared_mib) {
+        return Ok(());
+    }
+    Err(format!(
+        "{id} declares {declared_mib} MiB and the card has {free} MiB free of \
+         {total}. Benching starts a second server beside whatever is already \
+         loaded, so this would either fail to load or measure the difference \
+         across somebody else's model. Free the card first.",
+        total = device.total_mib
+    ))
+}
 
 /// What one entry turned out to cost and do.
 #[derive(Debug, Clone)]
@@ -133,6 +170,39 @@ pub fn entry(server: &Server, model: &Entry, root: &Path) -> Result<Measurement,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn card(total_mib: u64, used_mib: u64) -> DeviceMemory {
+        DeviceMemory {
+            total_mib,
+            used_mib,
+        }
+    }
+
+    #[test]
+    fn an_entry_that_fits_what_is_free_is_measured() {
+        // 29,339 MiB free of 32,607: the window heretic38 was benched in.
+        assert!(room_for("heretic38", 27_136, Some(&card(32_607, 3_268))).is_ok());
+    }
+
+    #[test]
+    fn an_entry_that_does_not_fit_is_refused_before_a_second_server_is_started() {
+        // The router holding gemma4 left 9,359 MiB of the same card free.
+        let refusal = room_for("heretic38", 27_136, Some(&card(32_607, 23_248)))
+            .expect_err("a second allocator on a full card is refused");
+
+        assert!(
+            refusal.contains("27136") && refusal.contains("9359"),
+            "the refusal names what was declared and what is free: {refusal}"
+        );
+    }
+
+    #[test]
+    fn a_card_that_cannot_be_read_is_not_a_refusal() {
+        // WSL2 reports no compute apps, and the measurement falls back to the
+        // difference across the load. There is nothing to compare against, and
+        // refusing here would block a bench that works.
+        assert!(room_for("heretic38", 27_136, None).is_ok());
+    }
 
     fn holding(mib: u32) -> Measurement {
         Measurement {

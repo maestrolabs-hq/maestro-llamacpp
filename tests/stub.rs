@@ -43,8 +43,14 @@ fn start(arguments: &[&str]) -> Running {
 }
 
 /// The status code from `GET /health`, or `None` while nothing is listening.
+///
+/// The read timeout is the one `arrivals` sets, for the same reason: a poll
+/// answers `None` and comes back, where a blocked read never does. Nothing
+/// listening refuses the connection, but something else holding this port may
+/// accept it and then say nothing at all, and that is the case that hangs.
 fn health(port: u16) -> Option<u16> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(1))).ok()?;
     stream
         .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .ok()?;
@@ -54,22 +60,56 @@ fn health(port: u16) -> Option<u16> {
     reply.split_whitespace().nth(1)?.parse().ok()
 }
 
+/// How waiting for a listener ended.
+///
+/// A child that is gone and a child that is slow are different answers, and a
+/// caller that cannot tell them apart reports the wrong one.
+#[derive(Debug)]
+enum Listening {
+    Ready(u16),
+    Exited(std::process::ExitStatus),
+    Never,
+}
+
 /// Polls until the stub is listening, so the readiness assertions are not
 /// racing process startup.
-fn wait_for_listener(port: u16) -> u16 {
+///
+/// The child is asked after each miss, because the two reasons a port stays
+/// quiet are not equally interesting. A stub that is still starting will
+/// answer shortly. A stub that lost the `free_port` race is already gone, and
+/// waiting out the budget for it reports a timeout where the child printed
+/// the actual cause on stderr before the first poll.
+fn listening(running: &mut Running, port: u16) -> Listening {
     for _ in 0..200 {
         if let Some(code) = health(port) {
-            return code;
+            return Listening::Ready(code);
+        }
+        match running.0.try_wait() {
+            Ok(Some(status)) => return Listening::Exited(status),
+            Ok(None) => {}
+            Err(error) => panic!("cannot ask whether the stub is still running: {error}"),
         }
         sleep(Duration::from_millis(25));
     }
-    panic!("the stub never listened on port {port}");
+    Listening::Never
+}
+
+fn wait_for_listener(running: &mut Running, port: u16) -> u16 {
+    match listening(running, port) {
+        Listening::Ready(code) => code,
+        Listening::Exited(status) => panic!(
+            "the stub exited with {status} rather than listening on port {port}; \
+             it printed the reason on stderr, and losing the free_port race \
+             reads `cannot bind ...: Address already in use`"
+        ),
+        Listening::Never => panic!("the stub never listened on port {port}"),
+    }
 }
 
 #[test]
 fn health_reports_loading_until_the_readiness_moment_then_ready() {
     let port = free_port();
-    let _running = start(&[
+    let mut running = start(&[
         "--host",
         "127.0.0.1",
         "--port",
@@ -79,7 +119,7 @@ fn health_reports_loading_until_the_readiness_moment_then_ready() {
     ]);
 
     assert_eq!(
-        wait_for_listener(port),
+        wait_for_listener(&mut running, port),
         503,
         "a loading server answers 503, which is what llama-server does"
     );
@@ -96,7 +136,7 @@ fn health_reports_loading_until_the_readiness_moment_then_ready() {
 #[test]
 fn unknown_arguments_are_ignored_so_a_real_invocation_drives_the_stub() {
     let port = free_port();
-    let _running = start(&[
+    let mut running = start(&[
         "--model",
         "somewhere/a.gguf",
         "--jinja",
@@ -109,7 +149,7 @@ fn unknown_arguments_are_ignored_so_a_real_invocation_drives_the_stub() {
     ]);
 
     assert_eq!(
-        wait_for_listener(port),
+        wait_for_listener(&mut running, port),
         200,
         "ready immediately, and every flag it does not know stepped over"
     );
@@ -118,8 +158,8 @@ fn unknown_arguments_are_ignored_so_a_real_invocation_drives_the_stub() {
 #[test]
 fn a_path_the_stub_does_not_serve_is_not_found() {
     let port = free_port();
-    let _running = start(&["--port", &port.to_string()]);
-    wait_for_listener(port);
+    let mut running = start(&["--port", &port.to_string()]);
+    wait_for_listener(&mut running, port);
 
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     stream
@@ -154,6 +194,37 @@ fn exit_after_exits_with_the_requested_code() {
         status.code(),
         Some(9),
         "the exit code a test asked for, so a crash during loading can be driven"
+    );
+}
+
+/// The stub exits the moment it cannot bind, saying so on stderr. Waiting for
+/// it to listen anyway spends the whole readiness budget and then reports a
+/// timeout, which names the wrong cause -- and where whatever took the port
+/// accepts without answering, the wait never returns at all.
+///
+/// This is the `free_port` race the module header says is accepted and
+/// recorded. Accepted it may be; unreadable it should not be.
+#[test]
+fn a_stub_that_cannot_bind_is_reported_as_gone_rather_than_as_slow() {
+    // Held for the whole test, which is what losing the race to another
+    // listener looks like from here.
+    let holder = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+    let port = holder.local_addr().expect("its address").port();
+
+    let mut running = start(&["--port", &port.to_string()]);
+    let started = Instant::now();
+    let outcome = listening(&mut running, port);
+    let took = started.elapsed();
+
+    assert!(
+        matches!(outcome, Listening::Exited(_)),
+        "a stub that is already gone is reported as gone, not handed to the \
+         readiness budget; got {outcome:?} after {took:?}"
+    );
+    assert!(
+        took < Duration::from_secs(2),
+        "and it is reported as soon as the child is gone, rather than after \
+         the full budget; took {took:?}"
     );
 }
 
@@ -193,7 +264,7 @@ fn arrivals(port: u16, request_line: &str) -> (String, Vec<Duration>) {
 #[test]
 fn a_paced_stream_arrives_spread_out_rather_than_at_once() {
     let port = free_port();
-    let _running = start(&[
+    let mut running = start(&[
         "--port",
         &port.to_string(),
         "--stream-events",
@@ -201,7 +272,7 @@ fn a_paced_stream_arrives_spread_out_rather_than_at_once() {
         "--stream-gap",
         "100",
     ]);
-    wait_for_listener(port);
+    wait_for_listener(&mut running, port);
 
     let (body, times) = arrivals(port, "POST /v1/chat/completions");
 
@@ -221,7 +292,7 @@ fn a_paced_stream_arrives_spread_out_rather_than_at_once() {
 #[test]
 fn die_after_events_truncates_the_stream() {
     let port = free_port();
-    let _running = start(&[
+    let mut running = start(&[
         "--port",
         &port.to_string(),
         "--stream-events",
@@ -231,7 +302,7 @@ fn die_after_events_truncates_the_stream() {
         "--die-after-events",
         "2",
     ]);
-    wait_for_listener(port);
+    wait_for_listener(&mut running, port);
 
     let (body, _) = arrivals(port, "POST /v1/chat/completions");
 
@@ -248,8 +319,8 @@ fn die_after_events_truncates_the_stream() {
 #[test]
 fn echo_reflects_the_request_line_and_every_header() {
     let port = free_port();
-    let _running = start(&["--port", &port.to_string()]);
-    wait_for_listener(port);
+    let mut running = start(&["--port", &port.to_string()]);
+    wait_for_listener(&mut running, port);
 
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     stream
@@ -281,8 +352,8 @@ fn echo_reflects_the_request_line_and_every_header() {
 #[test]
 fn echo_reports_the_alias_the_stub_was_started_as() {
     let port = free_port();
-    let _running = start(&["--port", &port.to_string(), "--alias", "gemma3"]);
-    wait_for_listener(port);
+    let mut running = start(&["--port", &port.to_string(), "--alias", "gemma3"]);
+    wait_for_listener(&mut running, port);
 
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     stream

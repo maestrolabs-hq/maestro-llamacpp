@@ -701,7 +701,8 @@ context_size = 8192
 # found the estimator charging every embedding entry a cache it never keeps --
 # fixed in `embeds_only`, which took the derivation from 2428 to 1660. What
 # remains above the measurement is the fixed overhead every entry carries.
-memory_estimate_mib = 1024
+# 2026-09-14, batches 8192: bench 1167 MiB; sampled device delta 1169 MiB.
+memory_estimate_mib = 1280
 
 [models.embed.flags]
 # `embeddings` is what makes this an embedding server, and it is exclusive:
@@ -714,6 +715,9 @@ embeddings = "true"
 # which is why the entry was checked against known-related text rather than
 # only for a 200.
 pooling = "cls"
+# Encoder sequences must fit a physical batch; the default 512 rejects long docs.
+batch-size = "8192"
+ubatch-size = "8192"
 fa = "on"
 np = "1"
 kv-unified = "true"
@@ -746,7 +750,8 @@ context_size = 8192
 # Measured 890 MiB resident 2026-09-12 on an RTX 5090, scoring pairs: a
 # twentieth over, to a quarter gibibyte. Within ten MiB of the embedder beside
 # it, which is what two 600 MB files that keep no cache should cost.
-memory_estimate_mib = 1024
+# 2026-09-14, batches 8192: bench 1171 MiB; sampled device delta 1176 MiB.
+memory_estimate_mib = 1280
 
 [models.rerank.flags]
 # `reranking` turns on the /v1/rerank endpoint and, like `embeddings` on the
@@ -754,6 +759,9 @@ memory_estimate_mib = 1024
 # Both flags exempt an entry from the cache term in the estimate, because
 # neither way of running a model keeps one.
 reranking = "true"
+# Query and document must fit one encoder batch, just like embeddings above.
+batch-size = "8192"
+ubatch-size = "8192"
 fa = "on"
 np = "1"
 kv-unified = "true"

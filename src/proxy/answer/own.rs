@@ -16,6 +16,7 @@
 
 use std::net::TcpStream;
 
+use super::super::refusal::{Cause, Refusal};
 use super::Shared;
 use super::reply;
 
@@ -89,6 +90,53 @@ pub(super) fn catalogue(
         &serde_json::json!({ "object": "list", "data": data }),
         head_only,
     )
+}
+
+/// Gives a slot up, for an operator who wants the card back now.
+///
+/// The router already decides residency in both directions: a completion
+/// starts a model, and the idle sweep ends one. This is the ending asked for
+/// directly, because waiting out an idle window on a model nobody is reading
+/// from was the only way to free a card short of stopping the router. ADR 0002
+/// records why that is the same authority rather than a new one.
+///
+/// Already-unloaded answers 200: the caller asked for room and the room is
+/// there. Busy answers 409 and names the entry, because taking it would cut
+/// off a request somebody is waiting on.
+pub(super) fn unload(
+    stream: &mut TcpStream,
+    shared: &Shared,
+    id: &str,
+    head_only: bool,
+) -> std::io::Result<()> {
+    if shared.catalog.entry(id).is_none() {
+        return reply::refuse(
+            stream,
+            &Refusal::new(
+                Cause::ModelNotFound,
+                format!("no entry called '{id}' to unload"),
+            ),
+        );
+    }
+
+    match shared.slots.give_up(id) {
+        Ok(()) => reply::json(
+            stream,
+            &serde_json::json!({
+                "id": id,
+                "object": "model",
+                "status": { "value": "unloaded", "failed": false },
+            }),
+            head_only,
+        ),
+        Err(busy) => reply::refuse(
+            stream,
+            &Refusal::new(
+                Cause::EntryBusy,
+                format!("'{busy}' is being read from, so its slot was left as it was"),
+            ),
+        ),
+    }
 }
 
 /// What this server does, as the one field a client reads from it.

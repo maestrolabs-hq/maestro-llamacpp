@@ -150,9 +150,20 @@ pub fn arrivals(address: impl ToSocketAddrs, raw: &str) -> (String, Vec<Duration
 }
 
 /// A request head with no body, ready to send.
+fn bodyless(method: &str, path: &str) -> String {
+    format!("{method} {path} HTTP/1.1\r\nHost: router\r\nConnection: close\r\n\r\n")
+}
+
+/// A request head with no body, ready to send.
 #[must_use]
 pub fn get(path: &str) -> String {
-    format!("GET {path} HTTP/1.1\r\nHost: router\r\nConnection: close\r\n\r\n")
+    bodyless("GET", path)
+}
+
+/// A request asking the router to give a slot up.
+#[must_use]
+pub fn delete(path: &str) -> String {
+    bodyless("DELETE", path)
 }
 
 /// A request carrying a JSON body of the length it declares.

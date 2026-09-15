@@ -76,6 +76,10 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
         Endpoint::Listing => return reply::listing(&mut stream, shared, head_only),
         Endpoint::Catalogue => return own::catalogue(&mut stream, shared, head_only),
         Endpoint::Properties => return own::properties(&mut stream, head_only),
+        // Residency is the one answer here that changes something. It is
+        // still the router's own, settled without a child and without
+        // starting one: the only direction it moves is towards less loaded.
+        Endpoint::Residency { ref id } => return own::unload(&mut stream, shared, id, head_only),
         Endpoint::Dedicated { .. } | Endpoint::Generic { .. } => {}
     }
 
@@ -84,7 +88,10 @@ pub(super) fn to(shared: &Shared, mut stream: TcpStream) -> std::io::Result<()> 
     // is why only one of these two arms buffers anything.
     let (wanted, buffered) = match &request.endpoint {
         Endpoint::Dedicated { id, .. } => (id.clone(), None),
-        Endpoint::Listing | Endpoint::Catalogue | Endpoint::Properties => {
+        Endpoint::Listing
+        | Endpoint::Catalogue
+        | Endpoint::Properties
+        | Endpoint::Residency { .. } => {
             unreachable!("answered above")
         }
         Endpoint::Generic { .. } => {
@@ -171,6 +178,7 @@ fn framing(request: &Head) -> Result<(), Refusal> {
             Endpoint::Listing => "the model listing".to_owned(),
             Endpoint::Catalogue => "the catalogue".to_owned(),
             Endpoint::Properties => "the server's properties".to_owned(),
+            Endpoint::Residency { id } => format!("the residency of '{id}'"),
         };
         return Err(Refusal::new(
             Cause::ChunkedBody,

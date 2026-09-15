@@ -57,6 +57,10 @@ pub(super) enum Cause {
     RoomContended,
     /// Nothing can be unloaded to make room.
     NoRoom,
+    /// An entry an operator asked to unload is being read from. Taking it
+    /// would cut off a request somebody is waiting on, so it is refused
+    /// rather than waited for -- see ADR 0002.
+    EntryBusy,
 }
 
 impl Cause {
@@ -80,6 +84,7 @@ impl Cause {
             Self::StartupTimeout => (504, "startup_timeout"),
             Self::RoomContended => (503, "room_contended"),
             Self::NoRoom => (503, "insufficient_room"),
+            Self::EntryBusy => (409, "entry_busy"),
         }
     }
 

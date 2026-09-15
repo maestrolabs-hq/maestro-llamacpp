@@ -16,6 +16,17 @@ const THRESHOLD: &str = "0.85";
 /// Pairs we have looked at and chosen to keep, with the reason.
 const ACCEPTED: &[(&str, &str)] = &[
     (
+        "derived <-> configured",
+        "The delegation family: `configured` is `derived` plus the environment, \
+         and its unset path calls it. They match because both now take a probe \
+         and return a budget, which is the point rather than the duplication -- \
+         the probe is a parameter precisely so one reading of the machine can \
+         serve both, instead of each taking its own and deriving two budgets \
+         from one card. Collapsing them means one constructor taking whether \
+         to read the environment as a flag, and the two names are what say \
+         which question is being asked.",
+    ),
+    (
         "optional <-> required",
         "required is optional plus one guard, and delegates to it. Collapsing \
          them would mean one function taking a boolean saying whether the \

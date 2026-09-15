@@ -21,6 +21,7 @@ use maestro_llamacpp::admission::Budget;
 use maestro_llamacpp::catalog::Catalog;
 use maestro_llamacpp::idle::{IdleWindow, Limits};
 use maestro_llamacpp::launch::{Server, models_root};
+use maestro_llamacpp::memory::Probe;
 use maestro_llamacpp::proxy::Router;
 use maestro_llamacpp::queue::Wait;
 use maestro_llamacpp::{bench, startup};
@@ -95,7 +96,11 @@ fn serve(catalog: &Path, address: Option<&str>) -> Result<(), String> {
         .parse()
         .map_err(|error| format!("'{wanted}' is not an address to bind: {error}"))?;
 
-    let budget = Budget::configured().map_err(|failure| failure.to_string())?;
+    // One reading of the machine, taken here and handed on. The budget used
+    // to take its own, twice, which left no way to give it a reading already
+    // in hand -- and two readings of a machine whose tools answer `None` when
+    // starved are two chances to derive different budgets from one card.
+    let budget = Budget::configured(Probe::detect()).map_err(|failure| failure.to_string())?;
     let idle_window = IdleWindow::configured().map_err(|failure| failure.to_string())?;
     // Composed before the catalog is handed over, because binding takes it.
     let limit_mib = budget.limit_mib();

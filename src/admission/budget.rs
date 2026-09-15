@@ -113,13 +113,21 @@ impl Budget {
     /// catalog: the catalog describes a set of models without naming the
     /// machine they sit on.
     ///
+    /// The machine is asked through `probe`, which the caller reads once and
+    /// hands in. It used to be read here, twice, with `Probe::detect` -- so a
+    /// caller that had already read the machine could not say so, and a test
+    /// could not state a machine at all. Both readings answer `None` rather
+    /// than failing when a tool is missing or starved, so two of them could
+    /// legitimately disagree and derive two different budgets from one
+    /// machine. One reading, handed in, is the whole of the fix.
+    ///
     /// # Errors
     ///
     /// Returns a [`Failure`] when the variable carries something that is not a
     /// number. A budget someone tried to set and mistyped must not silently
     /// become whatever the machine would have chosen, because the difference
     /// is whether the ceiling is the one the operator meant.
-    pub fn configured() -> Result<Self, Failure> {
+    pub fn configured(probe: Probe) -> Result<Self, Failure> {
         // An empty value is treated as unset, as the models root is: a bare
         // `export MAESTRO_MEMORY_BUDGET_MIB=` is a plausible slip, and reading
         // it as a budget of nothing would refuse every model on the machine.
@@ -130,7 +138,7 @@ impl Budget {
             // anything reading that address off the first line got the
             // diagnostic instead. `source` carries what to say; `startup` says
             // it, in the order the command chooses.
-            return Ok(Self::derived(Probe::detect()));
+            return Ok(Self::derived(probe));
         };
 
         let text = value.to_string_lossy();
@@ -143,7 +151,7 @@ impl Budget {
         })?;
         Ok(Self {
             limit_mib: Some(limit),
-            probe: Probe::detect(),
+            probe,
             source: format!("from {VARIABLE}"),
         })
     }

@@ -122,18 +122,6 @@ const ACCEPTED: &[(&str, &str)] = &[
          says.",
     ),
     (
-        "catalogue <-> unload",
-        "Two handlers on the router's own surface, so they share its shape: \
-         take the stream and the shared state, decide from the catalog, and \
-         end in a `reply`. That shape is the contract every own-answer keeps \
-         -- nothing upstream, nothing started -- rather than duplication to \
-         remove. What they do does not overlap at all: one lists every entry \
-         and changes nothing, the other gives one slot up and is the only \
-         endpoint here that changes anything. Merging them would be one \
-         function taking whether to mutate as a parameter, which is the \
-         distinction ADR 0002 spends its length drawing.",
-    ),
-    (
         "listening <-> wait_for_listener",
         "The delegation family again: wait_for_listener is listening plus the \
          refusal, and calls it. Both exist because the stub's readiness has \

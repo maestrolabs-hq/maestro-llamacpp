@@ -48,6 +48,25 @@ impl Slots {
             .collect()
     }
 
+    /// What each loaded entry was measured holding, in catalog order.
+    ///
+    /// Taken once, as the child becomes ready, and then only read. Put beside
+    /// the estimate the catalog declares, it is the drift an operator is
+    /// looking for: the two numbers were already both known and the only
+    /// place they appeared together was a line on a stdout the service sends
+    /// to `/dev/null`.
+    ///
+    /// The larger of the resident and device sides, which is what the budget's
+    /// one number stands for -- and `None` where neither could be read, since
+    /// a measurement that did not happen is not a measurement of nothing.
+    ///
+    /// An entry holding no child is absent rather than zero.
+    pub(in super::super) fn memory(&self, catalog: &Catalog) -> Vec<(String, Option<u64>)> {
+        self.snapshot(catalog, |entry, held| {
+            (entry.id.clone(), held.measured.largest_mib())
+        })
+    }
+
     /// What is loaded now, as admission needs to see it.
     ///
     /// Each entry is counted at its estimate or at what it was measured to

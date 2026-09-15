@@ -127,6 +127,47 @@ fn unloading_an_entry_the_catalog_does_not_carry_is_not_found() {
     );
 }
 
+/// The failure this catches: an estimate that drifted had nowhere to show it.
+///
+/// The router measures every child as it becomes ready and holds the figure
+/// beside the catalog's claim, but said so only on a stdout the service sends
+/// to `/dev/null`. An entry declared 2431 MiB above what it held stayed that
+/// way until somebody benched it by hand. The catalogue is where a client --
+/// or an operator with `curl` -- can see both numbers without stopping
+/// anything.
+#[test]
+fn an_entry_carries_what_it_was_estimated_to_hold_and_what_it_held() {
+    let serving = serving(CATALOG, ModelsRoot::with(&[MODEL]));
+
+    let before = body(&request(serving.address(), &get("/models")));
+    assert_eq!(
+        before["data"][0]["memory"]["declared_mib"], 512,
+        "the estimate admission compares against, which the catalog states \
+         whether or not anything is loaded:\n{before}"
+    );
+    assert!(
+        before["data"][0]["memory"]["held_mib"].is_null(),
+        "nothing has been loaded, so nothing has been measured:\n{before}"
+    );
+
+    request(serving.address(), &get("/models/gemma3/v1/echo"));
+    let after = body(&request(serving.address(), &get("/models")));
+
+    assert_eq!(
+        after["data"][0]["status"]["value"], "loaded",
+        "the request above started it:\n{after}"
+    );
+    assert!(
+        after["data"][0]["memory"].get("held_mib").is_some(),
+        "a loaded entry carries the measurement it was taken at, present and \
+         null where no card could be read rather than missing:\n{after}"
+    );
+    assert_eq!(
+        after["data"][0]["memory"]["declared_mib"], 512,
+        "beside the estimate, which is what makes a drifted one visible:\n{after}"
+    );
+}
+
 #[test]
 fn the_properties_say_whether_the_router_loads_on_demand() {
     let serving = serving(CATALOG, ModelsRoot::with(&[MODEL]));

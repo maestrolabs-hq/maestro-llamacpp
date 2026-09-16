@@ -181,10 +181,46 @@ fn a_child_that_loses_the_port_race_once_still_starts_on_the_retry() {
     drop(std::fs::remove_file(&marker));
 }
 
-/// The retry is bounded at one: a child that loses the race on both its
-/// attempts is a real failure, not an infinite loop.
+/// The failure this catches: one retry was not enough.
+///
+/// A Windows runner lost the race on both attempts of a single run and
+/// reported the entry as a child that would not start. Each loss is
+/// independent, so a further retry is not a different kind of fix -- it is
+/// the same fix, far enough along that losing every time stops being
+/// plausible.
 #[test]
-fn a_child_that_never_binds_still_fails_after_one_retry() {
+fn a_child_that_loses_the_race_twice_still_starts_on_a_later_attempt() {
+    let root = ModelsRoot::with(&[MODEL]);
+    let mut entry = entry("twice");
+    let marker = std::env::temp_dir().join(format!(
+        "maestro-llamacpp-lost-twice-{}",
+        std::process::id()
+    ));
+    drop(std::fs::remove_file(&marker));
+    entry
+        .flags
+        .insert("never-bind-marker".to_owned(), marker.display().to_string());
+    entry
+        .flags
+        .insert("never-bind-runs".to_owned(), "2".to_owned());
+
+    let mut child = server()
+        .start(&entry, root.path())
+        .expect("two losses are still a race being lost, not a child failing");
+
+    assert_eq!(
+        health(child.endpoint()),
+        Some(200),
+        "the child that answers is the third one, after two that never bound"
+    );
+    child.stop();
+    drop(std::fs::remove_file(&marker));
+}
+
+/// The retry is bounded: a child that loses on every attempt is a real
+/// failure, not an infinite loop.
+#[test]
+fn a_child_that_never_binds_still_fails_after_its_attempts_are_spent() {
     let root = ModelsRoot::with(&[MODEL]);
     let mut entry = entry("neverbinds");
     entry
@@ -193,11 +229,11 @@ fn a_child_that_never_binds_still_fails_after_one_retry() {
 
     let failure = server()
         .start(&entry, root.path())
-        .expect_err("neither attempt ever binds");
+        .expect_err("no attempt ever binds");
 
     assert!(
         matches!(failure, Failure::Unavailable(_)),
-        "exhausting the one retry is still reported as the child failing to \
+        "exhausting the retries is still reported as the child failing to \
          start: {failure:?}"
     );
     assert!(

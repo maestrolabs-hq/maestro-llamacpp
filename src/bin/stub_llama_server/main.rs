@@ -37,12 +37,17 @@ struct Options {
     /// reached the right one needs the reply to say which one answered.
     alias: String,
     pacing: Pacing,
-    /// Names a marker file. On the run that finds it absent, this stub exits
-    /// before binding at all; on a later run that finds it present, it
-    /// behaves normally. Stands in for `launch::server`'s `free_port` losing
-    /// its own release-then-rebind race: the port this stub was given is
-    /// never touched, so nothing outside the process can ever connect to it.
+    /// Names a marker file counting the runs that have lost so far. While
+    /// fewer than `never_bind_runs` have, this stub exits before binding at
+    /// all; after that it behaves normally. Stands in for `launch::server`'s
+    /// `free_port` losing its own release-then-rebind race: the port this
+    /// stub was given is never touched, so nothing outside the process can
+    /// ever connect to it.
     never_bind_marker: Option<PathBuf>,
+    /// How many runs lose before one binds. One unless a test says otherwise,
+    /// which is the single lost race this marker described until a run was
+    /// seen to lose twice.
+    never_bind_runs: usize,
     /// The same failure, on every run rather than only the first, for
     /// proving a retry is bounded rather than unbounded.
     never_bind: bool,
@@ -64,8 +69,11 @@ fn main() -> ExitCode {
     // lost `free_port`'s race. Present means a prior run already paid that
     // cost, so this one behaves as asked.
     if let Some(marker) = &options.never_bind_marker {
-        if !marker.exists() {
-            if let Err(error) = std::fs::write(marker, b"") {
+        // One byte per run that has lost, because each run is a separate
+        // execution of this binary and has nowhere else to remember.
+        let lost = std::fs::read(marker).map_or(0, |recorded| recorded.len());
+        if lost < options.never_bind_runs {
+            if let Err(error) = std::fs::write(marker, vec![b'.'; lost + 1]) {
                 eprintln!("stub-llama-server: cannot write never-bind marker: {error}");
             }
             return ExitCode::FAILURE;
@@ -142,6 +150,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut die_after = None;
     let mut hangup_marker = None;
     let mut never_bind_marker = None;
+    let mut never_bind_runs = 1;
     let mut never_bind = false;
 
     let mut args = args;
@@ -166,6 +175,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--die-after-events" => die_after = Some(number(&value()?, "--die-after-events")?),
             "--hangup-marker" => hangup_marker = Some(PathBuf::from(value()?)),
             "--never-bind-marker" => never_bind_marker = Some(PathBuf::from(value()?)),
+            "--never-bind-runs" => never_bind_runs = number(&value()?, "--never-bind-runs")?,
             "--never-bind" => never_bind = true,
             _ => {}
         }
@@ -184,6 +194,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
             hangup_marker,
         },
         never_bind_marker,
+        never_bind_runs,
         never_bind,
     })
 }

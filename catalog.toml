@@ -416,15 +416,38 @@ reasoning-preserve = "true"
 [models.heretic38]
 path = "llm/qwen/qwen3.8-27b-heretic-0bserverx/RVN-Q5_K_M-multilingual-mtp.gguf"
 projector_path = "llm/qwen/qwen3.8-27b-heretic-0bserverx/mmproj-Qwen3.8-27B-Q8_0.gguf"
-context_size = 131072
-# Measured 25729 MiB resident 2026-09-15 on an RTX 5090, loading in 26.3 s
-# and generating at 110.1 tok/s: a twentieth over, to a quarter gibibyte.
+# The whole 262144 these weights were trained to, which turbo38-long and
+# qwopus38 reach by being four bits lighter. This one stays at five bits and
+# keeps an eight-bit cache, which is a deliberate choice and an expensive one.
 #
-# The derivation this replaces reasoned from qwen38-uncensored at 26944 MiB
-# and the 1166 MiB an embedded draft head costs elsewhere in the family, and
-# landed near 27800 -- 2431 MiB above what the card actually held. The parts
-# were each measured; the sum was not, and that is the whole of the error.
-memory_estimate_mib = 27136
+# All three benched on an RTX 5090 on 2026-09-16, one at a time on a card with
+# nothing else resident:
+#
+#   context   cache    held MiB   load    rate
+#    131072    q8_0       25988   55.6s   112.3 tok/s
+#    262144    q8_0       28536   31.1s    38.4 tok/s
+#    262144    q4_0       27274   36.8s   102.6 tok/s
+#
+# The second row is what this entry is. Doubling the window at eight bits
+# costs two thirds of the generation rate: 28536 MiB is within a few hundred
+# of everything the card had free, and a model at the edge of its device does
+# not run at the speed it does with room to spare.
+#
+# The third row is the alternative that was not taken. A four-bit cache buys
+# the same 262144 for 1262 MiB less and keeps 102.6 tok/s -- nine percent off
+# the short-context rate rather than sixty-six. It trades precision in the
+# cache instead, which is a real cost on long-context recall and the reason
+# the choice went the other way. Switching is two flags and a re-bench.
+context_size = 262144
+# Measured 28536 MiB resident 2026-09-16 at this context: a twentieth over, to
+# a quarter gibibyte. The estimator had said 30068, which is 1532 more than
+# the card actually gave it -- the estimator is close enough to plan with and
+# not close enough to declare, which is what ADR 0003 is about.
+#
+# At 131072 this entry measured 25988, and the derivation that first went in
+# with it was 2431 MiB out. Both are kept because they are what makes this
+# figure checkable rather than asserted.
+memory_estimate_mib = 30208
 reasoning_format = "deepseek"
 
 [models.heretic38.flags]

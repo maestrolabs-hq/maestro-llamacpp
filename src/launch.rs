@@ -28,6 +28,7 @@ use std::process::ExitStatus;
 
 mod binary;
 mod invocation;
+mod port;
 mod probe;
 mod root;
 mod server;

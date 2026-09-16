@@ -4,17 +4,22 @@
 //! [`Child`], [`Liveness`] -- lives beside this, because those are the types
 //! that outlive the call and this is only the work that produces them.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::binary::{BINARY_NAME, on_search_path, runtime_binary, runtime_named};
+use super::port::free_port;
 use super::{Child, Failure, Liveness, invocation, probe};
 use crate::catalog::Entry;
 
 /// How often readiness is asked for while a model loads.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How many spawns one `start` makes before a lost port race is reported as
+/// the child failing. Every attempt after the first follows a loss.
+const ATTEMPTS: usize = 4;
 
 /// The server binary this router runs children from.
 ///
@@ -59,29 +64,36 @@ impl Server {
 
     /// Starts one entry and returns once it is ready to answer.
     ///
-    /// Retries once when a spawn dies before a single connection to it ever
+    /// Retries when a spawn dies before a single connection to it ever
     /// succeeded. `free_port` releases a port before the child binds it, and
     /// under enough concurrent spawns something else takes it first; the
     /// child then exits on its own first bind attempt, having never been
     /// reachable at all. That is not a model that failed to load -- it is
-    /// this launcher losing a race with itself -- and one retry on a fresh
-    /// port is the honest fix, because `free_port`'s race cannot be closed at
-    /// the source: `llama-server` binds the port itself from `--port`, so
-    /// there is no listener this caller could hand it instead.
+    /// this launcher losing a race with itself -- and a fresh port is the
+    /// honest fix, because that race cannot be closed at the source.
+    ///
+    /// Bounded at [`ATTEMPTS`], and bounded is the whole of the requirement:
+    /// a child that never binds must fail rather than spin. The bound was one
+    /// retry until a Windows runner lost the race on both attempts of a
+    /// single run. Each loss is independent, so the odds fall away with every
+    /// attempt, while the cost against a child that genuinely cannot start is
+    /// one more spawn that exits at once.
     ///
     /// # Errors
     ///
     /// Returns a [`Failure`] naming the entry when its model file is missing,
-    /// when the child exits while loading (on the second attempt if the
-    /// first was a lost race), or when it does not become ready inside the
-    /// entry's startup budget.
+    /// when the child exits while loading (on the last attempt, if the
+    /// earlier ones were lost races), or when it does not become ready inside
+    /// the entry's startup budget.
     pub fn start(&self, entry: &Entry, root: &Path) -> Result<Child, Failure> {
-        match self.attempt(entry, root) {
-            Err((_, lost_the_race)) if lost_the_race => {
-                self.attempt(entry, root).map_err(|(failure, _)| failure)
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            match self.attempt(entry, root) {
+                Ok(child) => return Ok(child),
+                Err((failure, lost)) if !lost || attempts == ATTEMPTS => return Err(failure),
+                Err(_) => {}
             }
-            Err((failure, _)) => Err(failure),
-            Ok(child) => Ok(child),
         }
     }
 
@@ -232,18 +244,4 @@ impl Server {
             process,
         })
     }
-}
-
-/// A loopback port the operating system says is free.
-///
-/// Binding zero, reading the assignment and closing leaves a window in which
-/// something else can take the port before the child binds it. That race is
-/// real and this slice does not pretend otherwise: it reports the failure and
-/// does not retry. The alternatives are worse -- passing the descriptor to the
-/// child is not portable to Windows, and a fixed base port with an offset
-/// collides with whatever else is already on the machine.
-fn free_port() -> std::io::Result<u16> {
-    let listener = TcpListener::bind((invocation::HOST, 0))?;
-    let port = listener.local_addr()?.port();
-    Ok(port)
 }
